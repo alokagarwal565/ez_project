@@ -1,0 +1,16 @@
+streamlit==1.45.1
+python-dotenv==1.1.0
+Pillow==11.2.1
+numpy==1.26.4 # Updated to resolve conflict with pandas and langchain
+pandas==2.2.3
+langchain==0.2.11
+langchain-community==0.2.10
+langchain-core==0.2.23 # Updated to satisfy langchain==0.2.11 dependency
+langchain-huggingface==0.0.3 # Re-including this for HuggingFaceEmbeddings
+langchain-text-splitters==0.2.1
+google-generativeai==0.8.5 # Keeping this as the latest available on PyPI
+pypdf==4.2.0
+pgvector==0.3.6
+psycopg2-binary==2.9.10
+sqlalchemy==2.0.41
+sentence-transformers==2.7.0 # Explicitly add for HuggingFaceEmbeddings
