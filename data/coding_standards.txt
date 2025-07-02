@@ -1,0 +1,87 @@
+Company Name: InnovateCorp
+Document Title: Software Development Coding Standards
+Effective Date: June 25, 2025
+Version: 1.0
+
+1. Introduction
+These coding standards are designed to ensure consistency, readability, maintainability, and quality across all software developed at InnovateCorp. Adhering to these guidelines facilitates collaboration, reduces errors, and improves the long-term viability of our codebase.
+
+2. General Principles
+
+Clarity & Readability: Code should be easy to understand by others and by your future self.
+
+Consistency: Follow established patterns and conventions within the codebase.
+
+Maintainability: Write code that is easy to modify, debug, and extend.
+
+Performance & Efficiency: Optimize for performance where critical, without sacrificing readability.
+
+Security: Implement secure coding practices to prevent vulnerabilities.
+
+3. Naming Conventions
+
+Variables & Functions: Use camelCase (e.g., userName, calculateTotal). Descriptive names are preferred.
+
+Classes & Types: Use PascalCase (e.g., UserProfile, PaymentGateway).
+
+Constants: Use UPPER_SNAKE_CASE (e.g., MAX_RETRIES, DEFAULT_TIMEOUT).
+
+Files: Use kebab-case or snake_case as per language/framework conventions (e.g., user-service.js, database_utils.py).
+
+4. Code Formatting
+
+Indentation: Use [e.g., 4 spaces or tabs - be specific to language].
+
+Line Length: Limit lines to [e.g., 120 characters] for readability.
+
+Braces: Consistent placement (e.g., K&R style or Allman style).
+
+Whitespace: Use judiciously to improve readability (e.g., spaces around operators, after commas).
+
+5. Comments & Documentation
+
+Purpose: Use comments to explain why certain decisions were made, not just what the code does (which should be clear from the code itself).
+
+Function/Method Headers: Document purpose, parameters, return values, and any side effects.
+
+Complex Logic: Comment on intricate algorithms or business logic.
+
+TODO/FIXME: Use TODO for future work, FIXME for known issues that need immediate attention.
+
+6. Error Handling
+
+Graceful Degradation: Implement robust error handling mechanisms.
+
+Logging: Log errors with sufficient detail (e.g., timestamp, error type, stack trace).
+
+User Feedback: Provide clear and informative error messages to end-users.
+
+7. Modularity & Reusability
+
+Single Responsibility Principle (SRP): Each module, class, or function should have one clear responsibility.
+
+DRY (Don't Repeat Yourself): Avoid duplicating code. Refactor common logic into reusable components.
+
+Encapsulation: Limit access to internal data and methods of an object.
+
+8. Version Control (Git) Best Practices
+
+Branching Strategy: Use a clear branching model (e.g., Git Flow, GitHub Flow).
+
+Commit Messages: Write clear, concise, and descriptive commit messages using the [e.g., Conventional Commits] standard.
+
+Small Commits: Aim for atomic commits that address a single logical change.
+
+9. Code Review Process
+
+Mandatory: All code changes must undergo a peer code review before merging into the main branch.
+
+Constructive Feedback: Provide helpful and actionable feedback.
+
+Responsibility: Developers are responsible for addressing review comments.
+
+10. Tools & Linters
+Utilize static analysis tools and linters (e.g., ESLint, Prettier, SonarQube) to automate adherence to these standards. Configuration files for these tools are located in the project repositories.
+
+11. Continuous Improvement
+These standards are living documents and will evolve. Suggestions for improvements are welcome and can be submitted to the Tech Lead.
