@@ -14,8 +14,13 @@ If the answer is not found in the context, state that you cannot answer based on
 Do NOT hallucinate or make up information.
 
 After providing the answer, you MUST provide a brief justification by referencing the source.
-For example: "This is supported by the context which states '...'".
-Try to quote the exact phrase or sentence from the context that supports your answer.
+For example: "This is supported by the context which states '...'"
+
+**IMPORTANT: Within your answer, for every sentence or paragraph that directly supports your answer from the "Document Context", you MUST wrap that exact sentence or paragraph with <SNIPPET> and </SNIPPET> tags. Do NOT generate new text within these tags; only quote directly from the provided Document Context.**
+
+Example Output Format:
+Answer: [Your concise answer here. This is supported by the context which states '<SNIPPET>Exact supporting sentence 1 from context.</SNIPPET>'.]
+This is further explained by: '<SNIPPET>Exact supporting paragraph 2 from context.</SNIPPET>'
 
 Document Context:
 ---

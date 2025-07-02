@@ -186,18 +186,21 @@ else:
             if st.session_state.rag_chain and st.session_state.vectorstore: # Ensure vectorstore is also available
                 with st.spinner("Finding answer..."):
                     try:
-                        # The rag_chain now returns (response_text, docs)
-                        response_text, retrieved_docs = st.session_state.rag_chain(
+                        # The rag_chain now returns (response_text, snippets, docs)
+                        answer_text, snippets, retrieved_docs = st.session_state.rag_chain(
                             user_question, st.session_state.vectorstore.as_retriever(search_kwargs={"k": 5})
                         )
                         st.markdown("#### ✨ Answer:")
-                        st.write(response_text)
+                        st.write(answer_text)
                         
-                        # Optional: Display retrieved sources (for debugging/transparency)
-                        # st.markdown("##### Retrieved Sources:")
-                        # for i, doc in enumerate(retrieved_docs):
-                        #     st.write(f"**Chunk {i+1} (Source: {doc.metadata.get('source', 'N/A')}):**")
-                        #     st.code(doc.page_content[:200] + "...", language="text") # Show snippet
+                        if snippets:
+                            st.markdown("---")
+                            st.markdown("#### 🔍 Supporting Snippets from Document:")
+                            for i, snippet in enumerate(snippets):
+                                with st.expander(f"Snippet {i+1}"):
+                                    st.write(snippet) # Display each snippet inside an expander
+                        else:
+                            st.info("No specific supporting snippets identified for this answer.")
                             
                     except Exception as e:
                         st.error(f"Error getting answer: {e}")

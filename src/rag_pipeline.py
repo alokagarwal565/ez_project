@@ -20,6 +20,7 @@ import numpy as np
 import psycopg2
 import google.generativeai as genai
 import json
+import re # Import regex module
 
 from config import (
     DOC_FOLDER,
@@ -239,6 +240,25 @@ def delete_documents_from_vector_db(file_paths: List[str]):
         if conn: conn.close()
 
 
+def parse_llm_response_with_snippets(response_text: str) -> Tuple[str, List[str]]:
+    """
+    Parses the LLM's response to separate the main answer from supporting snippets
+    identified by <SNIPPET>...</SNIPPET> tags.
+    It also removes these tags from the main answer text.
+    """
+    # Regex to find content within <SNIPPET>...</SNIPPET> tags
+    snippet_pattern = re.compile(r'<SNIPPET>(.*?)</SNIPPET>', re.DOTALL)
+    
+    found_snippets = snippet_pattern.findall(response_text)
+    
+    # Remove the <SNIPPET> tags and their content from the main answer text
+    main_answer = re.sub(snippet_pattern, '', response_text).strip()
+    
+    # Clean up any extra whitespace or empty lines that might result from tag removal
+    main_answer = re.sub(r'\n\s*\n', '\n\n', main_answer).strip()
+
+    return main_answer, found_snippets
+
 def create_rag_chain(_llm: genai.GenerativeModel):
     """
     Create the RAG chain using a direct Google GenerativeModel.
@@ -257,10 +277,12 @@ def create_rag_chain(_llm: genai.GenerativeModel):
         
         try:
             response = _llm.generate_content(final_prompt)
-            return response.text, docs
+            # Parse the response to separate answer and snippets
+            answer_text, snippets = parse_llm_response_with_snippets(response.text)
+            return answer_text, snippets, docs # Return answer, snippets, and original docs
         except Exception as e:
             logging.error(f"Error generating content with Gemini: {e}", exc_info=True)
-            return f"Error: Could not generate response. {e}", []
+            return f"Error: Could not generate response. {e}", [], []
 
     logging.info("RAG callable created successfully.")
     return rag_callable
@@ -421,3 +443,4 @@ def evaluate_user_answer(question: str, user_answer: str, document_content: str,
     except Exception as e:
         logging.error(f"Error evaluating user answer with Gemini: {e}", exc_info=True)
         return f"Failed to evaluate answer: {e}"
+
