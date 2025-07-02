@@ -14,3 +14,4 @@ pgvector==0.3.6
 psycopg2-binary==2.9.10
 sqlalchemy==2.0.41
 sentence-transformers==2.7.0 # Explicitly add for HuggingFaceEmbeddings
+#pip install torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
