@@ -269,11 +269,11 @@ def create_rag_chain(_llm: genai.GenerativeModel):
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
-    def rag_callable(question: str, retriever: Any):
-        docs = retriever.invoke(question)
+    def rag_callable(question_with_context: str, retriever: Any): # Renamed 'question' to 'question_with_context'
+        docs = retriever.invoke(question_with_context) # Use the contextualized question for retrieval
         formatted_context = format_docs(docs)
         
-        final_prompt = RAG_PROMPT_TEMPLATE.format(context=formatted_context, question=question)
+        final_prompt = RAG_PROMPT_TEMPLATE.format(context=formatted_context, question=question_with_context)
         
         try:
             response = _llm.generate_content(final_prompt)
@@ -378,6 +378,10 @@ def generate_auto_summary(document_content: str, llm: genai.GenerativeModel) -> 
         logging.error(f"Error generating auto-summary with Gemini: {e}", exc_info=True)
         return f"Failed to generate summary: {e}"
 
+# The following two functions are duplicated from challenge_mode.py.
+# While they are present here, the main.py now imports them directly from challenge_mode.py
+# for better modularity. They are kept here for completeness of the original file.
+# In a real refactor, these would be removed from rag_pipeline.py.
 def generate_challenge_questions(document_content: str, llm: genai.GenerativeModel, num_questions: int = 3) -> List[str]:
     """
     Generates logic-based challenge questions from the document content using Gemini.
@@ -443,4 +447,3 @@ def evaluate_user_answer(question: str, user_answer: str, document_content: str,
     except Exception as e:
         logging.error(f"Error evaluating user answer with Gemini: {e}", exc_info=True)
         return f"Failed to evaluate answer: {e}"
-
