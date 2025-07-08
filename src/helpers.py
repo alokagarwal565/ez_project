@@ -10,6 +10,7 @@ import streamlit as st
 from typing import List, Tuple
 import os
 import psycopg2
+from psycopg2 import OperationalError, errors as psycopg2_errors # Import specific psycopg2 errors
 from config import PGVECTOR_CONN_STRING_PSYCOPG2
 
 # Configure logging
@@ -42,7 +43,7 @@ def create_base64_download_button(file_path: str, label: str = "📄 Download so
 
         with open(file_path, "rb") as f:
             bytes_data = f.read()
-        
+
         b64 = base64.b64encode(bytes_data).decode()
         file_name = os.path.basename(file_path)
         mime_type, _ = mimetypes.guess_type(file_name)
@@ -76,7 +77,7 @@ def create_base64_download_button(file_path: str, label: str = "📄 Download so
     except Exception as e:
         st.error(f"Failed to generate download link for {os.path.basename(file_path)}. Error: {e}")
         logging.error(f"Error generating download link for '{file_path}': {e}", exc_info=True)
-        
+
 # ***************Indexing*******************
 def create_hnsw_indexing():
     """
@@ -122,18 +123,25 @@ def create_hnsw_indexing():
                 WITH (m = 16, ef_construction = 200);
             """)
             logging.info("✅ HNSW index created on langchain_pg_embedding.embedding")
+            st.success("HNSW index created for faster searches!")
         else:
             logging.info("HNSW index 'hnsw_embedding_idx' already exists. Skipping creation.")
 
-    except psycopg2.errors.UndefinedColumn as e:
+    except OperationalError as e:
+        logging.error(f"❌ PostgreSQL connection error during HNSW index creation: {e}", exc_info=True)
+        st.error(f"Database connection failed during index creation. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
+    except psycopg2_errors.UndefinedColumn as e:
         logging.error(f"❌ Error creating HNSW index: Column 'embedding' not found in 'langchain_pg_embedding'. Ensure your PGVector setup is correct. Details: {e}", exc_info=True)
-        st.error("Database column error: Ensure PGVector is correctly set up (e.g., `embedding` column exists).")
-    except psycopg2.errors.UndefinedTable as e:
+        st.error("Database column error: The 'embedding' column is missing. Ensure PGVector is correctly set up and the database schema is initialized (run init_db.py).")
+    except psycopg2_errors.UndefinedTable as e:
         logging.error(f"❌ Error creating HNSW index: Table 'langchain_pg_embedding' not found. Ensure your PGVector setup is correct. Details: {e}", exc_info=True)
-        st.error("Database table error: Ensure PGVector is correctly set up (e.g., `langchain_pg_embedding` table exists).")
+        st.error("Database table error: The 'langchain_pg_embedding' table is missing. Ensure PGVector is correctly set up and the database schema is initialized (run init_db.py).")
+    except psycopg2_errors.DuplicateObject as e:
+        logging.warning(f"HNSW index already exists (caught DuplicateObject error): {e}")
+        st.info("HNSW index already exists. Skipping creation.")
     except Exception as e:
-        logging.error(f"❌ Error creating HNSW index: {e}", exc_info=True)
-        st.error(f"Failed to create HNSW index: {e}. Please check your PostgreSQL connection and permissions.")
+        logging.error(f"❌ An unexpected error occurred during HNSW index creation: {e}", exc_info=True)
+        st.error(f"Failed to create HNSW index. Please check your PostgreSQL connection and permissions. Error: {e}")
     finally:
         if cursor:
             cursor.close()

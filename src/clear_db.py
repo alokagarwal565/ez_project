@@ -5,6 +5,7 @@
 
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from psycopg2 import OperationalError, errors as psycopg2_errors # Import specific psycopg2 errors
 import logging
 
 # Configure logging for this script
@@ -33,21 +34,39 @@ def clear_vector_db_tables():
 
         # Drop 'langchain_pg_embedding' table if it exists
         logging.info("Checking for and dropping 'langchain_pg_embedding' table...")
-        cur.execute("DROP TABLE IF EXISTS langchain_pg_embedding CASCADE;")
-        logging.info("✅ 'langchain_pg_embedding' table dropped if it existed.")
+        try:
+            cur.execute("DROP TABLE IF EXISTS langchain_pg_embedding CASCADE;")
+            logging.info("✅ 'langchain_pg_embedding' table dropped if it existed.")
+        except psycopg2_errors.InsufficientPrivilege:
+            logging.error("❌ Insufficient privileges to drop 'langchain_pg_embedding' table. Please ensure your PostgreSQL user has appropriate permissions.")
+            raise # Re-raise to be caught by outer except block
+        except Exception as e:
+            logging.error(f"❌ Error dropping 'langchain_pg_embedding' table: {e}", exc_info=True)
+            raise # Re-raise to be caught by outer except block
 
         # Drop 'langchain_pg_collection' table if it exists
         logging.info("Checking for and dropping 'langchain_pg_collection' table...")
-        cur.execute("DROP TABLE IF EXISTS langchain_pg_collection CASCADE;")
-        logging.info("✅ 'langchain_pg_collection' table dropped if it existed.")
+        try:
+            cur.execute("DROP TABLE IF EXISTS langchain_pg_collection CASCADE;")
+            logging.info("✅ 'langchain_pg_collection' table dropped if it existed.")
+        except psycopg2_errors.InsufficientPrivilege:
+            logging.error("❌ Insufficient privileges to drop 'langchain_pg_collection' table. Please ensure your PostgreSQL user has appropriate permissions.")
+            raise # Re-raise to be caught by outer except block
+        except Exception as e:
+            logging.error(f"❌ Error dropping 'langchain_pg_collection' table: {e}", exc_info=True)
+            raise # Re-raise to be caught by outer except block
 
         logging.info("🎉 Database tables cleared successfully!")
 
-    except psycopg2.Error as e:
-        logging.error(f"❌ PostgreSQL database error during clearing: {e}", exc_info=True)
-        logging.error("Please ensure your PostgreSQL server is running and your database credentials in .env are correct.")
+    except OperationalError as e:
+        logging.error(f"❌ PostgreSQL database connection error during clearing: {e}", exc_info=True)
+        logging.error("Actionable: Database connection failed. Please ensure your PostgreSQL server is running and your database credentials in .env are correct.")
+    except psycopg2_errors.InsufficientPrivilege as e:
+        logging.error(f"❌ PostgreSQL permission error during clearing: {e}", exc_info=True)
+        logging.error("Actionable: Your PostgreSQL user lacks necessary privileges to drop tables. Grant appropriate permissions.")
     except Exception as e:
         logging.error(f"❌ An unexpected error occurred during database clearing: {e}", exc_info=True)
+        logging.error("Actionable: Review the logs for more details on this unexpected error.")
     finally:
         if cur:
             cur.close()

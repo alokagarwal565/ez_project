@@ -6,7 +6,7 @@ import os
 import pandas as pd
 import streamlit as st
 from typing import List, Any, Tuple
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader # Removed CSVLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
@@ -18,6 +18,7 @@ from helpers import create_hnsw_indexing
 from PIL import Image
 import numpy as np
 import psycopg2
+from psycopg2 import OperationalError, errors as psycopg2_errors # Import specific psycopg2 errors
 import google.generativeai as genai
 import json
 import re # Import regex module
@@ -31,7 +32,11 @@ from config import (
     PGVECTOR_CONN_STRING_PSYCOPG2,
     GOOGLE_API_KEY
 )
-from prompt_templates import RAG_PROMPT_TEMPLATE
+from prompt_templates import RAG_PROMPT_TEMPLATE, SUMMARY_PROMPT_TEMPLATE, CHUNK_SUMMARY_PROMPT_TEMPLATE, DOCUMENT_COMPARISON_PROMPT
+
+# Define a heuristic for maximum tokens for direct summarization
+# This is a rough estimate and might need fine-tuning based on actual LLM token limits and performance
+MAX_DIRECT_SUMMARY_TOKENS = 8000 # Roughly equivalent to 4000 words, leaves room for prompt
 
 @st.cache_resource
 def get_embedding_model():
@@ -43,23 +48,23 @@ def get_embedding_model():
         return embedding_model
     except Exception as e:
         logging.error(f"❌ Error loading HuggingFace Embedding Model: {e}", exc_info=True)
-        st.error(f"Failed to load embedding model: {e}. Please check your internet connection or model name.")
+        st.error(f"Failed to load embedding model. Please check your internet connection, model name, or if the model is correctly installed. Error: {e}")
         return None
 
 @st.cache_resource
 def get_gemini_rag_llm():
     """Initializes Gemini LLM for RAG."""
     if not GOOGLE_API_KEY:
-        st.error("Google API Key is required for Gemini LLM in RAG. Please set GOOGLE_API_KEY in your .env file.")
+        st.error("Google API Key is required for Gemini LLM. Please set GOOGLE_API_KEY in your .env file.")
         return None
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        llm = genai.GenerativeModel("gemini-1.5-flash-latest")
-        logging.info("✅ Gemini GenerativeModel initialized successfully for RAG.")
+        llm = genai.GenerativeModel(CHAT_MODEL) # Use CHAT_MODEL from config
+        logging.info(f"✅ Gemini GenerativeModel ({CHAT_MODEL}) initialized successfully for RAG.")
         return llm
     except Exception as e:
         logging.error(f"❌ Error initializing Gemini LLM: {e}", exc_info=True)
-        st.error(f"Failed to initialize Gemini LLM: {e}. Please check your Google API Key.")
+        st.error(f"Failed to initialize Gemini LLM. Please check your Google API Key in the .env file and ensure it's valid. Error: {e}")
         return None
 
 
@@ -75,9 +80,13 @@ def load_existing_vector_db(_embedding_model: Any) -> PGVector | None:
         logging.info("✅ Existing vector DB loaded successfully.")
         create_hnsw_indexing() # Ensure HNSW index is created for performance
         return vector_db
+    except OperationalError as e:
+        logging.error(f"❌ PostgreSQL connection error when loading vector DB: {e}", exc_info=True)
+        st.error(f"Database connection failed when loading knowledge base. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
+        return None
     except Exception as e:
         logging.error(f"❌ Error loading existing vector DB: {e}", exc_info=True)
-        st.error(f"Failed to load vector database: {e}. Please ensure PostgreSQL is running and accessible.")
+        st.error(f"Failed to load vector database. Ensure PostgreSQL is running, PGVector extension is installed, and tables are initialized. Error: {e}")
         return None
 
 def load_documents(file_path: str) -> List[Document]:
@@ -87,10 +96,10 @@ def load_documents(file_path: str) -> List[Document]:
         loader = PyPDFLoader(file_path)
     elif file_path.endswith(".txt"):
         loader = TextLoader(file_path)
-    elif file_path.endswith(".csv"): # CSVLoader is from langchain_community.document_loaders
-        loader = CSVLoader(file_path)
+    # Removed CSVLoader
     else:
         logging.warning(f"Unsupported file type for {file_path}. Skipping.")
+        st.warning(f"Unsupported file type: {os.path.basename(file_path)}. Please upload PDF or TXT.") # Updated message
         return []
 
     if loader:
@@ -100,7 +109,7 @@ def load_documents(file_path: str) -> List[Document]:
             return documents
         except Exception as e:
             logging.error(f"Error loading {file_path}: {e}", exc_info=True)
-            st.error(f"Error loading {os.path.basename(file_path)}: {e}")
+            st.error(f"Error loading document '{os.path.basename(file_path)}'. Please check the file's integrity. Error: {e}")
             return []
     return []
 
@@ -116,13 +125,16 @@ def split_documents(documents: List[Document]) -> List[Document]:
     logging.info(f"Split documents into {len(chunks)} chunks.")
     return chunks
 
-def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: List[str] = None):
+def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: List[str] = None, progress_bar=None, status_text=None) -> int:
     """
     Creates/rebuilds the vector database by processing documents.
     If documents_to_process is None, processes all documents in DOC_FOLDER.
     Otherwise, processes only the specified file paths.
+    Returns the number of chunks processed.
     """
-    st.info("🔄 Rebuilding knowledge base. This may take a moment...")
+    if status_text: status_text.info("🔄 Rebuilding knowledge base. This may take a moment...")
+    if progress_bar: progress_bar.progress(0, text="Starting knowledge base rebuild...")
+
     try:
         all_file_paths = []
         if documents_to_process:
@@ -137,27 +149,35 @@ def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: Lis
 
         if not all_file_paths:
             st.warning("No documents found to process for the knowledge base.")
-            return
+            if progress_bar: progress_bar.progress(100, text="No documents to process.")
+            return 0
 
         documents = []
-        for file_path in all_file_paths:
+        for i, file_path in enumerate(all_file_paths):
+            if status_text: status_text.info(f"Loading document: {os.path.basename(file_path)}...")
+            if progress_bar: progress_bar.progress(int((i / len(all_file_paths)) * 20), text=f"Loading document: {os.path.basename(file_path)}...")
             docs = load_documents(file_path)
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             for doc in docs:
-                relative_path = os.path.relpath(file_path, project_root)
-                doc.metadata["source"] = relative_path
+                # Store relative path in metadata for multi-document Q&A and comparison
+                doc.metadata["source"] = os.path.relpath(file_path, project_root)
             documents.extend(docs)
 
         if not documents:
             st.warning("No valid documents loaded for processing. Knowledge base not rebuilt.")
-            return
+            if progress_bar: progress_bar.progress(100, text="No valid documents loaded.")
+            return 0
 
+        if status_text: status_text.info("Chunking text...")
+        if progress_bar: progress_bar.progress(20, text="Chunking text...")
         chunks = split_documents(documents)
 
         # Clear existing collection before adding new documents to ensure a "rebuild"
         conn = None
         cur = None
         try:
+            if status_text: status_text.info(f"Clearing existing data for collection '{COLLECTION_NAME}'...")
+            if progress_bar: progress_bar.progress(40, text=f"Clearing existing data for collection '{COLLECTION_NAME}'...")
             conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
             conn.autocommit = True
             cur = conn.cursor()
@@ -172,28 +192,47 @@ def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: Lis
                 logging.info("Existing documents cleared from collection.")
             else:
                 logging.info(f"Collection '{COLLECTION_NAME}' does not exist, no documents to clear.")
+        except OperationalError as e:
+            logging.error(f"❌ PostgreSQL connection error during clearing: {e}", exc_info=True)
+            st.error(f"Database connection failed during data clearing. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
+            return 0
+        except psycopg2_errors.UndefinedTable as e:
+            logging.warning(f"Collection table not found during clearing (might be first run): {e}")
+            st.warning("Database tables not found. Attempting to create them (this is normal on first run).")
         except Exception as e:
-            logging.warning(f"Could not clear existing documents from collection '{COLLECTION_NAME}': {e}")
+            logging.warning(f"Could not clear existing documents from collection '{COLLECTION_NAME}': {e}", exc_info=True)
+            st.warning(f"Failed to clear existing documents from knowledge base. Proceeding with adding new documents. Error: {e}")
         finally:
             if cur: cur.close()
             if conn: conn.close()
 
         logging.info("Creating/updating vector database with new chunks.")
-        
+        if status_text: status_text.info("Embedding chunks and adding to database...")
+        if progress_bar: progress_bar.progress(60, text="Embedding chunks and adding to database...")
+
         vector_db = PGVector(
             embedding_function=embedding_model,
             collection_name=COLLECTION_NAME,
             connection_string=PGVECTOR_CONN_STRING_SQLACHEMY,
             # pre_delete_collection=True # This option is for dropping the entire table, not just clearing a collection
         )
-        
+
         vector_db.add_documents(chunks)
-        
+
         logging.info(f"✅ Vector database rebuilt with {len(chunks)} chunks.")
-        st.success(f"✅ Knowledge base rebuilt with {len(chunks)} chunks from {len(all_file_paths)} files.")
+        if status_text: st.success(f"✅ Knowledge base rebuilt with {len(chunks)} chunks from {len(all_file_paths)} files.")
+        if progress_bar: progress_bar.progress(100, text="Knowledge base rebuilt successfully!")
+        return len(chunks) # Return number of chunks
+    except OperationalError as e:
+        logging.error(f"❌ PostgreSQL connection error during vector DB rebuild: {e}", exc_info=True)
+        st.error(f"Database connection failed during knowledge base rebuild. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
+        if progress_bar: progress_bar.progress(0, text="Failed to rebuild knowledge base.")
+        return 0
     except Exception as e:
         logging.error(f"❌ Error during vector DB rebuild: {e}", exc_info=True)
-        st.error(f"Failed to rebuild knowledge base: {e}")
+        st.error(f"Failed to rebuild knowledge base. Please check the document content or database configuration. Error: {e}")
+        if progress_bar: progress_bar.progress(0, text="Failed to rebuild knowledge base.")
+        return 0
 
 def delete_documents_from_vector_db(file_paths: List[str]):
     """Deletes documents from the vector database based on file paths."""
@@ -232,9 +271,12 @@ def delete_documents_from_vector_db(file_paths: List[str]):
         logging.info(f"✅ Deleted {deleted_rows} chunks from {len(file_paths)} documents from vector DB.")
         st.success(f"✅ Deleted {deleted_rows} chunks from {len(file_paths)} documents from knowledge base.")
 
+    except OperationalError as e:
+        logging.error(f"❌ PostgreSQL connection error during document deletion: {e}", exc_info=True)
+        st.error(f"Database connection failed during document deletion. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
     except Exception as e:
         logging.error(f"Error during document deletion from PGVector: {e}", exc_info=True)
-        st.error(f"Failed to delete documents from Vector DB: {e}")
+        st.error(f"Failed to delete documents from Vector DB. Error: {e}")
     finally:
         if cur: cur.close()
         if conn: conn.close()
@@ -248,12 +290,12 @@ def parse_llm_response_with_snippets(response_text: str) -> Tuple[str, List[str]
     """
     # Regex to find content within <SNIPPET>...</SNIPPET> tags
     snippet_pattern = re.compile(r'<SNIPPET>(.*?)</SNIPPET>', re.DOTALL)
-    
+
     found_snippets = snippet_pattern.findall(response_text)
-    
+
     # Remove the <SNIPPET> tags and their content from the main answer text
     main_answer = re.sub(snippet_pattern, '', response_text).strip()
-    
+
     # Clean up any extra whitespace or empty lines that might result from tag removal
     main_answer = re.sub(r'\n\s*\n', '\n\n', main_answer).strip()
 
@@ -265,24 +307,34 @@ def create_rag_chain(_llm: genai.GenerativeModel):
     This chain will manually construct the prompt and call generate_content.
     """
     logging.info("Creating RAG chain with Gemini GenerativeModel.")
-    
+
     def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+        # Format documents, including their source for context
+        formatted_string = ""
+        for i, doc in enumerate(docs):
+            # Extract just the filename from the full path in metadata
+            source_filename = os.path.basename(doc.metadata.get("source", "Unknown Source"))
+            formatted_string += f"--- Document Context (Source: {source_filename}) ---\n"
+            formatted_string += doc.page_content
+            formatted_string += "\n\n"
+        return formatted_string.strip()
 
     def rag_callable(question_with_context: str, retriever: Any): # Renamed 'question' to 'question_with_context'
-        docs = retriever.invoke(question_with_context) # Use the contextualized question for retrieval
-        formatted_context = format_docs(docs)
-        
-        final_prompt = RAG_PROMPT_TEMPLATE.format(context=formatted_context, question=question_with_context)
-        
         try:
+            docs = retriever.invoke(question_with_context) # Use the contextualized question for retrieval
+            formatted_context = format_docs(docs)
+
+            final_prompt = RAG_PROMPT_TEMPLATE.format(context=formatted_context, question=question_with_context)
+
             response = _llm.generate_content(final_prompt)
             # Parse the response to separate answer and snippets
             answer_text, snippets = parse_llm_response_with_snippets(response.text)
             return answer_text, snippets, docs # Return answer, snippets, and original docs
         except Exception as e:
-            logging.error(f"Error generating content with Gemini: {e}", exc_info=True)
-            return f"Error: Could not generate response. {e}", [], []
+            logging.error(f"Error generating content with Gemini in RAG chain: {e}", exc_info=True)
+            # Provide a more user-friendly error message
+            st.error(f"Failed to get an answer from the AI. This might be due to an issue with the AI model or your query. Error: {e}")
+            return f"Sorry, I couldn't process your request right now. Please try again or rephrase your question. Error: {e}", [], []
 
     logging.info("RAG callable created successfully.")
     return rag_callable
@@ -294,11 +346,12 @@ def classify_query_department(query: str) -> Tuple[str, str] :
     """
     if not GOOGLE_API_KEY:
         logging.warning("Google API Key not set. Cannot classify query by department using Gemini.")
+        st.warning("AI features requiring Google API Key are not available. Please set GOOGLE_API_KEY in your .env file.")
         return "general", ""
 
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        model = genai.GenerativeModel(CHAT_MODEL) # Use CHAT_MODEL from config
 
         classification_prompt = f"""
         Given the following user query, classify it into one of these departments: 'HR', 'IT', 'Sales', 'Finance', 'Legal', 'Product', 'Marketing', 'Data Science', 'Operations', 'Research', 'Customer Support', 'General'.
@@ -311,7 +364,7 @@ def classify_query_department(query: str) -> Tuple[str, str] :
         Query: "{query}"
         """
         response = model.generate_content(classification_prompt)
-        
+
         try:
             response_json = json.loads(response.text)
             department = response_json.get("department", "General")
@@ -322,6 +375,8 @@ def classify_query_department(query: str) -> Tuple[str, str] :
             return department, ", ".join(keywords)
         except json.JSONDecodeError:
             logging.warning(f"Gemini response for classification was not valid JSON: {response.text[:100]}...")
+            st.warning("AI model returned an unparseable response for query classification. Using general classification.")
+            # Fallback to simple keyword-based classification if JSON parsing fails
             lower_query = query.lower()
             if "hr" in lower_query or "human resources" in lower_query or "leave" in lower_query or "salary" in lower_query:
                 return "HR", "HR"
@@ -337,17 +392,18 @@ def classify_query_department(query: str) -> Tuple[str, str] :
 
     except Exception as e:
         logging.error(f"Error classifying query with Gemini: {e}", exc_info=True)
+        st.error(f"Failed to classify query using AI. Error: {e}")
         return "general", ""
 
 def get_document_content_for_summary(file_path: str) -> str:
     """
     Extracts and returns the full text content of a document for summarization.
-    Supports PDF, TXT, and CSV files.
+    Supports PDF and TXT files.
     """
     documents = load_documents(file_path)
     if not documents:
         return ""
-    
+
     # Concatenate page content from all documents/pages
     full_content = "\n".join([doc.page_content for doc in documents])
     return full_content
@@ -355,95 +411,101 @@ def get_document_content_for_summary(file_path: str) -> str:
 def generate_auto_summary(document_content: str, llm: genai.GenerativeModel) -> str:
     """
     Generates a concise summary (approx. 150 words) of the document content using Gemini.
+    For very large documents, it implements a map-reduce style summarization.
     """
     if not document_content or not llm:
         return "Could not generate summary: missing document content or LLM."
 
     logging.info("Generating auto-summary for the document.")
-    summary_prompt = f"""
-    Please summarize the following document content in approximately 150 words.
-    Focus on the main topics, key arguments, and conclusions.
 
-    Document Content:
-    ---
-    {document_content}
-    ---
-
-    Concise Summary:
-    """
     try:
-        response = llm.generate_content(summary_prompt)
-        return response.text
+        # Check if the document content is too large for direct summarization
+        if len(document_content) > MAX_DIRECT_SUMMARY_TOKENS: # Using character count as a proxy for tokens
+            logging.info("Document content is very large, performing map-reduce summarization.")
+            st.info("Document is very large. Summarizing in multiple steps, this may take longer...")
+
+            # Split the document into chunks for individual summarization
+            # Use a text splitter similar to how documents are chunked for vector DB, but for raw text
+            summary_text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=MAX_DIRECT_SUMMARY_TOKENS // 2, # Make chunks smaller for chunk summaries
+                chunk_overlap=100,
+                length_function=len,
+                is_separator_regex=False,
+            )
+            content_chunks = summary_text_splitter.split_text(document_content)
+
+            chunk_summaries = []
+            for i, chunk in enumerate(content_chunks):
+                logging.info(f"Summarizing chunk {i+1}/{len(content_chunks)}")
+                chunk_prompt = CHUNK_SUMMARY_PROMPT_TEMPLATE.format(text_chunk=chunk)
+                chunk_response = llm.generate_content(chunk_prompt)
+                chunk_summaries.append(chunk_response.text)
+                st.progress((i + 1) / len(content_chunks), text=f"Summarizing chunk {i+1} of {len(content_chunks)}...")
+
+            # Combine chunk summaries and summarize them again
+            combined_chunk_summaries = "\n\n".join(chunk_summaries)
+            logging.info(f"Combined {len(chunk_summaries)} chunk summaries. Final summarization step.")
+
+            final_summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(document_content=combined_chunk_summaries)
+            response = llm.generate_content(final_summary_prompt)
+            return response.text
+        else:
+            # Direct summarization for smaller documents
+            summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(document_content=document_content)
+            response = llm.generate_content(summary_prompt)
+            return response.text
     except Exception as e:
-        logging.error(f"Error generating auto-summary with Gemini: {e}", exc_info=True)
+        logging.error(f"❌ Error generating auto-summary with Gemini: {e}", exc_info=True)
+        st.error(f"Failed to generate summary. This might be due to an issue with the AI model or the document content. Error: {e}")
         return f"Failed to generate summary: {e}"
 
-# The following two functions are duplicated from challenge_mode.py.
-# While they are present here, the main.py now imports them directly from challenge_mode.py
-# for better modularity. They are kept here for completeness of the original file.
-# In a real refactor, these would be removed from rag_pipeline.py.
-def generate_challenge_questions(document_content: str, llm: genai.GenerativeModel, num_questions: int = 3) -> List[str]:
+def compare_documents_with_llm(query: str, llm: genai.GenerativeModel, retriever: Any) -> str:
     """
-    Generates logic-based challenge questions from the document content using Gemini.
+    Compares concepts or findings across multiple documents using the LLM.
+    Retrieves relevant chunks and prompts the LLM to perform the comparison.
     """
-    if not document_content or not llm:
-        return []
+    if not query or not llm or not retriever:
+        return "Cannot perform comparison: missing query, LLM, or retriever."
 
-    logging.info(f"Generating {num_questions} challenge questions.")
-    question_prompt = f"""
-    Based on the following document content, generate {num_questions} challenging, logic-based questions.
-    These questions should require understanding and inference, not just direct recall.
-    Ensure the questions are answerable from the provided text.
-    Format each question with a number, e.g., "1. Question one?".
+    logging.info(f"Performing document comparison for query: {query}")
 
-    Document Content:
-    ---
-    {document_content}
-    ---
-
-    Challenge Questions:
-    """
     try:
-        response = llm.generate_content(question_prompt)
-        # Parse the response into a list of questions
-        questions_raw = response.text.strip().split('\n')
-        questions = [q.strip() for q in questions_raw if q.strip() and q[0].isdigit()]
-        return questions[:num_questions] # Return only the requested number of questions
-    except Exception as e:
-        logging.error(f"Error generating challenge questions with Gemini: {e}", exc_info=True)
-        return [f"Failed to generate questions: {e}"]
+        # Retrieve relevant documents based on the comparison query
+        # The retriever should return documents with 'source' metadata
+        docs = retriever.invoke(query)
 
-def evaluate_user_answer(question: str, user_answer: str, document_content: str, llm: genai.GenerativeModel) -> str:
-    """
-    Evaluates a user's answer against the document content using Gemini.
-    Provides detailed feedback.
-    """
-    if not question or not user_answer or not document_content or not llm:
-        return "Cannot evaluate: missing question, answer, document content, or LLM."
+        if not docs:
+            return "No relevant information found in the documents for this comparison query."
 
-    logging.info(f"Evaluating user answer for question: {question[:50]}...")
-    evaluation_prompt = f"""
-    You are an evaluator. Your task is to compare a user's answer to a question based on a given document.
-    Provide constructive feedback.
+        # Group documents by source for clearer presentation to the LLM
+        context_by_source = {}
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Get project root for relative path
 
-    Question: "{question}"
-    User's Answer: "{user_answer}"
+        for doc in docs:
+            # Ensure source is a relative path for display
+            source_path = doc.metadata.get("source", "unknown_source.txt")
+            # Extract just the filename for display
+            source_filename = os.path.basename(source_path)
+            if source_filename not in context_by_source:
+                context_by_source[source_filename] = []
+            context_by_source[source_filename].append(doc.page_content)
 
-    Document Content (for reference):
-    ---
-    {document_content}
-    ---
+        formatted_context = ""
+        for source, contents in context_by_source.items():
+            formatted_context += f"--- Content from: {source} ---\n"
+            formatted_context += "\n".join(contents)
+            formatted_context += "\n\n"
 
-    Please provide your evaluation in the following format:
-    1. **Accuracy**: Is the user's answer factually correct based on the document? (Yes/No/Partially)
-    2. **Completeness**: Does the user's answer address all aspects of the question that can be derived from the document? (Yes/No/Partially)
-    3. **Clarity**: Is the user's answer clear and easy to understand? (Yes/No)
-    4. **Justification/Feedback**: Explain why the answer is accurate/inaccurate or complete/incomplete, referencing the document where appropriate. Suggest improvements if necessary.
-    5. **Score**: Assign a score from 0 to 10 for the user's answer, where 10 is excellent and 0 is completely incorrect.
-    """
-    try:
-        response = llm.generate_content(evaluation_prompt)
+        # Use the document comparison prompt
+        comparison_prompt = DOCUMENT_COMPARISON_PROMPT.format(
+            document_context=formatted_context.strip(),
+            comparison_query=query
+        )
+
+        response = llm.generate_content(comparison_prompt)
         return response.text
+
     except Exception as e:
-        logging.error(f"Error evaluating user answer with Gemini: {e}", exc_info=True)
-        return f"Failed to evaluate answer: {e}"
+        logging.error(f"❌ Error comparing documents with Gemini: {e}", exc_info=True)
+        st.error(f"Failed to compare documents. This might be due to an issue with the AI model or the documents. Error: {e}")
+        return f"Failed to compare documents: {e}"

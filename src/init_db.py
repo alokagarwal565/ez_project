@@ -5,6 +5,7 @@
 
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from psycopg2 import OperationalError, errors as psycopg2_errors # Import specific psycopg2 errors
 import logging
 
 # Configure logging for this script
@@ -34,8 +35,16 @@ def init_vector_db_tables():
 
         # 1. Create the 'vector' extension if it doesn't exist
         logging.info("Checking for 'vector' extension...")
-        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        logging.info("✅ 'vector' extension ensured.")
+        try:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            logging.info("✅ 'vector' extension ensured.")
+        except psycopg2_errors.InsufficientPrivilege:
+            logging.error("❌ Insufficient privileges to create 'vector' extension. Please ensure your PostgreSQL user has CREATE privilege on the database or install the extension manually.")
+            raise # Re-raise to be caught by outer except block
+        except Exception as e:
+            logging.error(f"❌ Error creating 'vector' extension: {e}", exc_info=True)
+            raise # Re-raise to be caught by outer except block
+
 
         # 2. Create 'langchain_pg_collection' table if it doesn't exist
         logging.info("Checking for 'langchain_pg_collection' table...")
@@ -50,11 +59,12 @@ def init_vector_db_tables():
 
         # 3. Create 'langchain_pg_embedding' table if it doesn't exist
         logging.info("Checking for 'langchain_pg_embedding' table...")
+        # Removed backslashes from the end of lines in the SQL query
         cur.execute("""
             CREATE TABLE IF NOT EXISTS langchain_pg_embedding (
                 id SERIAL PRIMARY KEY,
                 collection_id UUID REFERENCES langchain_pg_collection (uuid) ON DELETE CASCADE,
-                embedding VECTOR(384), -- CORRECTED: Added dimension (384)
+                embedding VECTOR(384),
                 document TEXT,
                 cmetadata JSONB,
                 custom_id TEXT,
@@ -65,12 +75,19 @@ def init_vector_db_tables():
 
         logging.info("🎉 Database schema initialized successfully!")
 
-    except psycopg2.Error as e:
-        logging.error(f"❌ PostgreSQL database error during initialization: {e}", exc_info=True)
+    except OperationalError as e:
+        logging.error(f"❌ PostgreSQL connection error during initialization: {e}", exc_info=True)
         logging.error("Please ensure your PostgreSQL server is running, your database credentials in .env are correct, and the specified database exists.")
-        logging.error("If 'vector' extension creation fails, you might need to install it manually on your PostgreSQL server.")
+        logging.error("Actionable: Check your .env file for PG_USER, PG_PASSWORD, PG_HOST, PG_PORT, PG_DBNAME. Also, verify PostgreSQL server status.")
+    except psycopg2_errors.InsufficientPrivilege as e:
+        logging.error(f"❌ PostgreSQL permission error during initialization: {e}", exc_info=True)
+        logging.error("Actionable: Your PostgreSQL user lacks necessary privileges (e.g., CREATE EXTENSION). Grant appropriate permissions or install 'vector' extension manually.")
+    except psycopg2_errors.UndefinedTable as e:
+        logging.error(f"❌ PostgreSQL table definition error during initialization: {e}", exc_info=True)
+        logging.error("Actionable: A table definition might be incorrect or a dependency is missing. Review table schemas.")
     except Exception as e:
         logging.error(f"❌ An unexpected error occurred during database initialization: {e}", exc_info=True)
+        logging.error("Actionable: Review the logs for more details on this unexpected error.")
     finally:
         if cur:
             cur.close()

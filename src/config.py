@@ -15,7 +15,7 @@ os.makedirs(DOC_FOLDER, exist_ok=True)
 
 # --- LLM and Embedding Model Settings ---
 # Chat model to be used for Q&A, summary, and challenge mode (e.g., "gemini-1.5-flash-latest")
-CHAT_MODEL = "gemini-1.5-flash-latest" 
+CHAT_MODEL = "gemini-1.5-flash-latest"
 # Embedding model for vectorizing documents (e.g., "sentence-transformers/all-MiniLM-L6-v2")
 EMBEDDING_MODEL_NAME = 'sentence-transformers/all-MiniLM-L6-v2'
 # Collection name for the PGVector database

@@ -45,7 +45,7 @@ Before you begin, ensure you have the following installed:
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/smart-research-assistant.git
+git clone https://github.com/alokagarwal565/ez_project.git
 cd smart-research-assistant
 ```
 
@@ -174,7 +174,7 @@ This project is open-source and available under the [MIT License](https://openso
 
 If you encounter any problems or have questions, please:
 
-1. Check the [Issues](https://github.com/your-username/smart-research-assistant/issues) page
+1. Check the [Issues](https://github.com/alokagarwal565/ez_project/issues) page
 2. Create a new issue if your problem isn't already reported
 3. Provide detailed information about your setup and the error you're experiencing
 
