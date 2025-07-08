@@ -10,7 +10,7 @@ import streamlit as st
 from typing import List, Tuple
 import os
 import psycopg2
-from psycopg2 import OperationalError, errors as psycopg2_errors # Import specific psycopg2 errors
+from psycopg2 import OperationalError, errors as psycopg2_errors 
 from config import PGVECTOR_CONN_STRING_PSYCOPG2
 
 # Configure logging

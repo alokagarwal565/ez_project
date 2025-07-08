@@ -4,18 +4,21 @@
 # ===============================================================
 
 import logging
-from typing import List, Any, Dict, Union # Import Union
+from typing import List, Any, Dict, Union 
 import streamlit as st
-import google.generativeai as genai # Re-import for Gemini
-import json # Import json for parsing LLM output
-import re   # Import re for regex to strip markdown
-from langchain_community.chat_models import ChatOllama # Import ChatOllama
+import google.generativeai as genai 
+import json 
+import re   
+from langchain_community.chat_models import ChatOllama 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Define a type alias for the LLM, as it can be either Gemini or Ollama
 LLM_TYPE = Union[genai.GenerativeModel, ChatOllama]
+
+# Import prompt templates
+from prompt_templates import CHALLENGE_QUESTION_GENERATION_PROMPT, ANSWER_EVALUATION_PROMPT
 
 def _extract_json_from_markdown(text: str) -> str:
     """
@@ -31,90 +34,90 @@ def _extract_json_from_markdown(text: str) -> str:
 def generate_challenge_questions(document_content: str, llm: LLM_TYPE, num_questions: int = 3) -> List[str]: # Type hint changed
     """
     Generates logic-based challenge questions from the document content using the selected LLM.
+    The document_content is now expected to come from the database.
     """
-    if not document_content or not llm:
-        st.warning("Cannot generate questions: missing document content or AI model not initialized.")
+    if not document_content.strip():
+        st.error("No document content available from the database to generate questions.")
         return []
 
-    logging.info(f"Generating {num_questions} challenge questions.")
-
-    # Use the structured prompt from prompt_templates.py
-    from prompt_templates import CHALLENGE_QUESTION_GENERATION_PROMPT
-    question_prompt = CHALLENGE_QUESTION_GENERATION_PROMPT.format(
-        document_content=document_content
-    )
-
+    logging.info(f"Generating {num_questions} challenge questions from document content.")
+    
     try:
-        raw_response_text = ""
+        prompt = CHALLENGE_QUESTION_GENERATION_PROMPT.format(
+            document_content=document_content,
+            num_questions=num_questions
+        )
+        
+        response_text = ""
         if isinstance(llm, genai.GenerativeModel):
-            response = llm.generate_content(question_prompt)
-            raw_response_text = response.text
+            response = llm.generate_content(prompt)
+            response_text = response.text
         elif isinstance(llm, ChatOllama):
-            response = llm.invoke(question_prompt)
-            raw_response_text = response.content
+            response = llm.invoke(prompt)
+            response_text = response.content
         else:
             raise ValueError("Unsupported LLM type for question generation.")
 
-        # First, try to extract JSON from markdown if present
-        json_string = _extract_json_from_markdown(raw_response_text)
+        # Extract JSON from markdown if present
+        json_string = _extract_json_from_markdown(response_text)
+        
+        # Parse the JSON string. It's expected to be a list of strings directly.
+        questions_data = json.loads(json_string)
+        
+        # Validate that questions_data is a list and its elements are strings
+        if not isinstance(questions_data, list) or not all(isinstance(q, str) for q in questions_data):
+            logging.warning(f"LLM response for questions was not a list of strings as expected. Raw response: {response_text[:200]}...")
+            st.warning("AI model returned questions in an unexpected format. Please try again.")
+            return [f"Failed to parse questions. Raw AI response: {response_text}"]
 
-        # Attempt to parse the JSON response
-        try:
-            questions_json = json.loads(json_string)
-            if isinstance(questions_json, list) and all(isinstance(q, str) for q in questions_json):
-                questions = questions_json
-            else:
-                logging.warning(f"LLM returned JSON but not a list of strings: {json_string[:100]}...")
-                st.warning("AI model returned questions in an unexpected format. Displaying raw questions.")
-                raise ValueError("LLM did not return a valid JSON list of strings.")
-        except json.JSONDecodeError:
-            logging.warning(f"LLM response for questions was not valid JSON or could not be parsed as such. Raw response: {raw_response_text[:200]}...")
-            st.warning("AI model returned an unparseable response for questions. Displaying raw questions.")
-            # Fallback to line-by-line parsing if JSON parsing fails
-            questions_raw = raw_response_text.strip().split('\n')
-            questions = [q.strip() for q in questions_raw if q.strip() and (q[0].isdigit() or q.startswith('- '))] # Also handle markdown list
-
-        return questions[:num_questions] # Return only the requested number of questions
+        # Directly use the strings as questions
+        questions = questions_data[:num_questions] # Take up to num_questions
+        logging.info(f"Generated {len(questions)} questions.")
+        return questions
+    except json.JSONDecodeError:
+        logging.warning(f"LLM response for questions was not valid JSON or could not be parsed. Raw response: {response_text[:200]}...")
+        st.warning("AI model returned an unparseable response for questions. Please try again.")
+        return [f"Failed to generate questions. Raw AI response: {response_text}"]
     except Exception as e:
         logging.error(f"❌ Error generating challenge questions with LLM: {e}", exc_info=True)
-        st.error(f"Failed to generate challenge questions. This might be due to an issue with the AI model. Error: {e}")
-        return [f"Failed to generate questions: {e}"]
+        st.error(f"Failed to generate questions. This might be due to an issue with the AI model. Error: {e}")
+        return []
 
-def evaluate_user_answer(question: str, user_answer: str, document_content: str, llm: LLM_TYPE) -> Dict[str, Any]: # Type hint changed
+def evaluate_user_answer(question: str, user_answer: str, document_content: str, llm: LLM_TYPE) -> Dict[str, Any]:
     """
     Evaluates a user's answer against the document content using the selected LLM.
-    Provides detailed feedback and rubric scores.
-    Returns a dictionary with scores and feedback.
+    The document_content is now expected to come from the database.
     """
-    if not question or not user_answer or not document_content or not llm:
-        st.warning("Cannot evaluate answer: missing input (question, user answer, document content, or AI model).")
-        return {"accuracy_score": 0, "completeness_score": 0, "clarity_score": 0, "feedback": "Cannot evaluate: missing input."}
-
+    if not document_content.strip():
+        return {
+            "accuracy_score": 0,
+            "completeness_score": 0,
+            "clarity_score": 0,
+            "feedback": "Evaluation failed: No document content available from the database."
+        }
+    
     logging.info(f"Evaluating user answer for question: {question[:50]}...")
 
-    # Use the structured prompt from prompt_templates.py
-    from prompt_templates import ANSWER_EVALUATION_PROMPT
-    structured_evaluation_prompt = ANSWER_EVALUATION_PROMPT.format(
-        document_content=document_content,
-        question=question,
-        user_answer=user_answer
-    )
-
     try:
-        raw_response_text = ""
+        prompt = ANSWER_EVALUATION_PROMPT.format(
+            document_content=document_content,
+            question=question,
+            user_answer=user_answer
+        )
+
+        response_text = ""
         if isinstance(llm, genai.GenerativeModel):
-            response = llm.generate_content(structured_evaluation_prompt)
-            raw_response_text = response.text
+            response = llm.generate_content(prompt)
+            response_text = response.text
         elif isinstance(llm, ChatOllama):
-            response = llm.invoke(structured_evaluation_prompt)
-            raw_response_text = response.content
+            response = llm.invoke(prompt)
+            response_text = response.content
         else:
             raise ValueError("Unsupported LLM type for answer evaluation.")
 
-        # Extract JSON string from markdown code block if present
-        json_string = _extract_json_from_markdown(raw_response_text)
-
-        # Attempt to parse the JSON response
+        # Extract JSON from markdown if present
+        json_string = _extract_json_from_markdown(response_text)
+        
         try:
             evaluation_data = json.loads(json_string)
             # Ensure all expected keys are present, provide defaults if not
@@ -125,14 +128,14 @@ def evaluate_user_answer(question: str, user_answer: str, document_content: str,
                 "feedback": evaluation_data.get("feedback", "No detailed feedback provided.")
             }
         except json.JSONDecodeError:
-            logging.warning(f"LLM response for evaluation was not valid JSON or could not be parsed. Raw response: {raw_response_text[:200]}...")
+            logging.warning(f"LLM response for evaluation was not valid JSON or could not be parsed. Raw response: {response_text[:200]}...")
             st.warning("AI model returned an unparseable response for evaluation. Please try again.")
             # Fallback to plain text if JSON parsing fails
             return {
                 "accuracy_score": 0,
                 "completeness_score": 0,
                 "clarity_score": 0,
-                "feedback": f"Failed to parse structured evaluation. Raw AI response: {raw_response_text}"
+                "feedback": f"Failed to parse structured evaluation. Raw AI response: {response_text}"
             }
     except Exception as e:
         logging.error(f"❌ Error evaluating user answer with LLM: {e}", exc_info=True)

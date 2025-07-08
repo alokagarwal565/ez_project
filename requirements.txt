@@ -5,13 +5,13 @@ numpy==1.26.4
 pandas==2.2.3
 langchain==0.2.11
 langchain-community==0.2.10
-langchain-core==0.2.23
-langchain-huggingface==0.0.3
+langchain-core==0.2.23 
+langchain-huggingface==0.0.3 
 langchain-text-splitters==0.2.1
-google-generativeai==0.8.5
+google-generativeai==0.8.5 
 pypdf==4.2.0
 pgvector==0.3.6
 psycopg2-binary==2.9.10
 sqlalchemy==2.0.41
-sentence-transformers==2.7.0
+sentence-transformers==2.7.0 
 #pip install torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu

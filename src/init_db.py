@@ -51,8 +51,8 @@ def init_vector_db_tables():
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 name VARCHAR(255) NOT NULL,
-                document_name TEXT,
-                document_path TEXT,
+                -- Changed document_name and document_path to a single JSONB column for multiple documents
+                documents_metadata JSONB DEFAULT '[]'::jsonb,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)

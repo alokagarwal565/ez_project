@@ -152,9 +152,11 @@ def split_documents(documents: List[Document]) -> List[Document]:
     logging.info(f"Split documents into {len(chunks)} chunks.")
     return chunks
 
-def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: List[str], chat_session_id: str, progress_bar=None, status_text=None) -> int:
+def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process_paths: List[str], chat_session_id: str, progress_bar=None, status_text=None) -> int:
     """
     Creates/rebuilds the vector database for a specific chat session by processing documents.
+    It clears existing embeddings for the session's collection and then adds new ones from
+    ALL provided document paths.
     Returns the number of chunks processed.
     """
     if status_text: status_text.info("🔄 Rebuilding knowledge base. This may take a moment...")
@@ -164,16 +166,15 @@ def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: Lis
     collection_name_for_session = str(chat_session_id)
 
     try:
-        all_file_paths = documents_to_process
-        if not all_file_paths:
+        if not documents_to_process_paths:
             st.warning("No documents found to process for the knowledge base.")
             if progress_bar: progress_bar.progress(100, text="No documents to process.")
             return 0
 
         documents = []
-        for i, file_path in enumerate(all_file_paths):
+        for i, file_path in enumerate(documents_to_process_paths):
             if status_text: status_text.info(f"Loading document: {os.path.basename(file_path)}...")
-            if progress_bar: progress_bar.progress(int((i / len(all_file_paths)) * 20), text=f"Loading document: {os.path.basename(file_path)}...")
+            if progress_bar: progress_bar.progress(int((i / len(documents_to_process_paths)) * 20), text=f"Loading document: {os.path.basename(file_path)}...")
             docs = load_documents(file_path)
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             for doc in docs:
@@ -191,6 +192,8 @@ def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: Lis
         chunks = split_documents(documents)
 
         # Clear existing embeddings for this specific chat session's collection
+        # This ensures that when new documents are added, or existing ones are re-processed,
+        # the vector store is consistent with the current set of documents for the session.
         conn = None
         cur = None
         try:
@@ -240,7 +243,7 @@ def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: Lis
         vector_db.add_documents(chunks)
 
         logging.info(f"✅ Vector database rebuilt with {len(chunks)} chunks for session {chat_session_id}.")
-        if status_text: st.success(f"✅ Knowledge base rebuilt with {len(chunks)} chunks from {len(all_file_paths)} files for this chat.")
+        if status_text: st.success(f"✅ Knowledge base rebuilt with {len(chunks)} chunks from {len(documents_to_process_paths)} files for this chat.")
         if progress_bar: progress_bar.progress(100, text="Knowledge base rebuilt successfully!")
         return len(chunks) # Return number of chunks
     except OperationalError as e:
@@ -320,18 +323,57 @@ def create_rag_chain(_llm: LLM_TYPE): # Type hint changed to LLM_TYPE
     logging.info("RAG callable created successfully.")
     return rag_callable
 
-def get_document_content_for_summary(file_path: str) -> str:
+def get_all_document_chunks_text_for_session(chat_session_id: str) -> str:
     """
-    Extracts and returns the full text content of a document for summarization.
-    Supports PDF and TXT files.
+    Retrieves and concatenates all document text chunks stored in the database
+    for a given chat session. This replaces reading from local files for summarization,
+    challenge generation, and comparison.
     """
-    documents = load_documents(file_path)
-    if not documents:
-        return ""
+    conn = None
+    cur = None
+    full_content = []
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        cur = conn.cursor()
 
-    # Concatenate page content from all documents/pages
-    full_content = "\n".join([doc.page_content for doc in documents])
-    return full_content
+        # Get the collection_id (UUID) for this chat session
+        cur.execute("SELECT uuid FROM langchain_pg_collection WHERE name = %s;", (str(chat_session_id),))
+        collection_uuid_result = cur.fetchone()
+
+        if collection_uuid_result:
+            collection_uuid = collection_uuid_result[0]
+            logging.info(f"Retrieving all chunks for collection_id: {collection_uuid}")
+            # Retrieve all document content (chunks) for this collection
+            cur.execute(
+                "SELECT document FROM langchain_pg_embedding WHERE collection_id = %s ORDER BY id;",
+                (collection_uuid,)
+            )
+            for row in cur.fetchall():
+                full_content.append(row[0]) # row[0] is the 'document' TEXT column
+            logging.info(f"Retrieved {len(full_content)} chunks from DB for session {chat_session_id}.")
+        else:
+            logging.warning(f"No PGVector collection found for session {chat_session_id}. Cannot retrieve document content from DB.")
+            st.warning("No document content found in the database for this chat session.")
+        
+        return "\n\n".join(full_content) # Join all chunks into a single string
+    except OperationalError as e:
+        logging.error(f"❌ PostgreSQL connection error when retrieving document content for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Database connection failed when retrieving document content. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
+        return ""
+    except Exception as e:
+        logging.error(f"❌ Error retrieving document content from DB for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Failed to retrieve document content from database. Error: {e}")
+        return ""
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def get_document_content_for_summary(chat_session_id: str) -> str:
+    """
+    Extracts and returns the full text content of documents for summarization
+    by retrieving it directly from the database.
+    """
+    return get_all_document_chunks_text_for_session(chat_session_id)
 
 def generate_auto_summary(document_content: str, llm: LLM_TYPE) -> str: # Type hint changed to LLM_TYPE
     """
@@ -434,13 +476,11 @@ def compare_documents_with_llm(query: str, llm: LLM_TYPE, retriever: Any) -> str
 
         # Group documents by source for clearer presentation to the LLM
         context_by_source = {}
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Get project root for relative path
+        # project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # No longer needed for file access
 
         for doc in docs:
-            # Ensure source is a relative path for display
-            source_path = doc.metadata.get("source", "unknown_source.txt")
-            # Extract just the filename for display
-            source_filename = os.path.basename(source_path)
+            # The 'source' metadata should already contain the relative path/filename
+            source_filename = os.path.basename(doc.metadata.get("source", "Unknown Source"))
             if source_filename not in context_by_source:
                 context_by_source[source_filename] = []
             context_by_source[source_filename].append(doc.page_content)
@@ -476,7 +516,7 @@ def compare_documents_with_llm(query: str, llm: LLM_TYPE, retriever: Any) -> str
 
 # --- New functions for Chat Session Management ---
 
-def create_chat_session_db(chat_name: str, document_name: str = None, document_path: str = None) -> str:
+def create_chat_session_db(chat_name: str, documents_metadata: List[Dict[str, str]] = None) -> str:
     """Inserts a new chat session into the database and returns its UUID."""
     conn = None
     cur = None
@@ -486,10 +526,10 @@ def create_chat_session_db(chat_name: str, document_name: str = None, document_p
         new_uuid = uuid.uuid4()
         cur.execute(
             """
-            INSERT INTO chat_sessions (uuid, name, document_name, document_path)
-            VALUES (%s, %s, %s, %s) RETURNING uuid;
+            INSERT INTO chat_sessions (uuid, name, documents_metadata)
+            VALUES (%s, %s, %s) RETURNING uuid;
             """,
-            (str(new_uuid), chat_name, document_name, document_path) # Convert UUID to string
+            (str(new_uuid), chat_name, json.dumps(documents_metadata) if documents_metadata else json.dumps([])) # Store as JSONB
         )
         session_uuid = cur.fetchone()[0]
         conn.commit()
@@ -512,19 +552,27 @@ def load_chat_sessions_db() -> List[Dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT uuid, name, document_name, document_path, created_at
+            SELECT uuid, name, documents_metadata, created_at
             FROM chat_sessions
             ORDER BY created_at DESC;
             """
         )
         sessions = []
         for row in cur.fetchall():
+            documents_metadata = row[2]
+            if isinstance(documents_metadata, str): # If JSONB stored as string, parse it
+                try:
+                    documents_metadata = json.loads(documents_metadata)
+                except json.JSONDecodeError:
+                    documents_metadata = [] # Fallback if parsing fails
+            elif documents_metadata is None:
+                documents_metadata = []
+
             sessions.append({
                 "id": str(row[0]),
                 "name": row[1],
-                "document_name": row[2],
-                "document_path": row[3],
-                "created_at": row[4].strftime("%Y-%m-%d %H:%M:%S") if row[4] else "N/A"
+                "documents_metadata": documents_metadata, # This is now a list of dicts
+                "created_at": row[3].strftime("%Y-%m-%d %H:%M:%S") if row[3] else "N/A"
             })
         logging.info(f"Loaded {len(sessions)} chat sessions from DB.")
         return sessions
@@ -663,8 +711,11 @@ def rename_chat_session_db(chat_session_id: str, new_name: str):
         if cur: cur.close()
         if conn: conn.close()
 
-def update_chat_session_document_metadata_db(chat_session_id: str, document_name: str, document_path: str):
-    """Updates the document metadata for an existing chat session."""
+def update_chat_session_documents_metadata_db(chat_session_id: str, documents_metadata: List[Dict[str, str]]):
+    """
+    Updates the list of document metadata (name and path) for an existing chat session.
+    This function expects the complete list of documents for the session.
+    """
     conn = None
     cur = None
     try:
@@ -673,15 +724,15 @@ def update_chat_session_document_metadata_db(chat_session_id: str, document_name
         cur.execute(
             """
             UPDATE chat_sessions
-            SET document_name = %s, document_path = %s
+            SET documents_metadata = %s
             WHERE uuid = %s;
             """,
-            (document_name, document_path, chat_session_id)
+            (json.dumps(documents_metadata), chat_session_id)
         )
         conn.commit()
-        logging.info(f"Updated document metadata for session {chat_session_id}.")
+        logging.info(f"Updated documents metadata for session {chat_session_id}.")
     except Exception as e:
-        logging.error(f"❌ Error updating document metadata for session {chat_session_id}: {e}", exc_info=True)
+        logging.error(f"❌ Error updating documents metadata for session {chat_session_id}: {e}", exc_info=True)
         st.error(f"Failed to update document metadata for this chat. Error: {e}")
     finally:
         if cur: cur.close()
@@ -699,8 +750,9 @@ def get_num_chunks_for_session(chat_session_id: str) -> int:
         if collection_uuid_result:
             collection_uuid = collection_uuid_result[0]
             cur.execute("SELECT COUNT(*) FROM langchain_pg_embedding WHERE collection_id = %s;", (collection_uuid,))
-            count = cur.fetchone()[0]
-            return count
+            # Fetchone returns a tuple, get the first element for the count
+            count = cur.fetchone()[0] 
+            return int(count) # Ensure count is an integer
         return 0
     except Exception as e:
         logging.error(f"❌ Error getting chunk count for session {chat_session_id}: {e}", exc_info=True)
@@ -708,3 +760,4 @@ def get_num_chunks_for_session(chat_session_id: str) -> int:
     finally:
         if cur: cur.close()
         if conn: conn.close()
+

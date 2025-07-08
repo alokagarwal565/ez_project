@@ -6,33 +6,33 @@
 import streamlit as st
 import os
 import logging
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import shutil # For clearing the data folder
 import uuid # For generating UUIDs for chat sessions
 from datetime import datetime # For timestamps
 import google.generativeai as genai # Import for type checking
 from langchain_community.chat_models import ChatOllama # Import for type checking
 
-from config import DOC_FOLDER, GOOGLE_API_KEY # Re-import GOOGLE_API_KEY
+from config import DOC_FOLDER, GOOGLE_API_KEY 
 from rag_pipeline import (
     get_embedding_model,
-    get_llm, # Changed from get_gemini_rag_llm / get_local_llm
+    get_llm, 
     load_existing_vector_db,
     create_vector_db_and_rebuild,
     create_rag_chain,
     generate_auto_summary,
-    get_document_content_for_summary,
+    get_document_content_for_summary, 
     compare_documents_with_llm,
-    # New functions for chat session management
+    get_all_document_chunks_text_for_session,
     create_chat_session_db,
     load_chat_sessions_db,
     delete_chat_session_db,
     save_chat_message_db,
     load_chat_history_db,
     rename_chat_session_db,
-    update_chat_session_document_metadata_db,
-    get_num_chunks_for_session, # Import new function
-    LLM_TYPE # Import the LLM_TYPE alias
+    update_chat_session_documents_metadata_db,
+    get_num_chunks_for_session, 
+    LLM_TYPE 
 )
 from challenge_mode import generate_challenge_questions, evaluate_user_answer
 from helpers import create_base64_download_button
@@ -65,15 +65,17 @@ if "llm" not in st.session_state:
 if "current_chat_id" not in st.session_state:
     st.session_state.current_chat_id = None # UUID of the currently active chat session
 if "chat_sessions_list" not in st.session_state:
-    st.session_state.chat_sessions_list = [] # List of dicts: {'id', 'name', 'document_name', 'document_path', 'created_at'}
+    st.session_state.chat_sessions_list = [] # List of dicts: {'id', 'name', 'documents_metadata', 'created_at'}
 if "active_chat_name" not in st.session_state:
     st.session_state.active_chat_name = "New Chat" # Display name for the current chat
 if "document_uploaded_for_current_session" not in st.session_state:
     st.session_state.document_uploaded_for_current_session = False # Tracks if a document is uploaded for the *current* active session
-if "current_document_path_for_session" not in st.session_state: # Path to the document for the current session
-    st.session_state.current_document_path_for_current_session = None
-if "current_document_name_for_session" not in st.session_state: # Name of the document for the current session
-    st.session_state.current_document_name_for_session = None
+# Changed to store a list of document metadata (name and path)
+if "current_documents_metadata" not in st.session_state:
+    st.session_state.current_documents_metadata = [] # List of {'name': str, 'path': str}
+# New: Store full document text content retrieved from DB for summarization/challenge
+if "current_session_full_document_text" not in st.session_state:
+    st.session_state.current_session_full_document_text = ""
 
 
 # Other session states (reset per session, or managed per session)
@@ -104,8 +106,12 @@ if "vectorstore" not in st.session_state:
 
 
 # --- Helper Functions ---
-def clear_doc_folder_for_current_session():
-    """Clears all files from the DOC_FOLDER. Used when a new document is uploaded."""
+def clear_doc_folder_only_temp_files():
+    """
+    Clears only temporary files from the DOC_FOLDER.
+    This function is now primarily for cleanup of newly uploaded files after processing,
+    or for ensuring a clean slate for a brand new chat.
+    """
     if os.path.exists(DOC_FOLDER):
         for filename in os.listdir(DOC_FOLDER):
             file_path = os.path.join(DOC_FOLDER, filename)
@@ -123,15 +129,16 @@ def reset_current_chat_session():
     """Resets the state for a new chat session."""
     # Create the new chat session entry in DB immediately
     new_chat_name = f"New Chat - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    st.session_state.current_chat_id = create_chat_session_db(new_chat_name) # Get UUID from DB
+    # Pass empty list for documents_metadata for a new chat
+    st.session_state.current_chat_id = create_chat_session_db(new_chat_name, documents_metadata=[])
     if not st.session_state.current_chat_id: # If DB creation failed
         st.error("Failed to create a new chat session in the database. Please check your database connection.")
         return # Prevent further execution if session creation failed
 
     st.session_state.active_chat_name = new_chat_name
     st.session_state.document_uploaded_for_current_session = False
-    st.session_state.current_document_path_for_session = None
-    st.session_state.current_document_name_for_session = None
+    st.session_state.current_documents_metadata = [] # Reset to empty list
+    st.session_state.current_session_full_document_text = "" # Reset full document text
     st.session_state.chat_history = []
     st.session_state.auto_summary = None
     st.session_state.summary_generated = False
@@ -141,7 +148,7 @@ def reset_current_chat_session():
     st.session_state.evaluation_results = [{}, {}, {}]
     st.session_state.current_document_chunks = 0
     st.session_state.comparison_result = None
-    clear_doc_folder_for_current_session() # Clear local data folder
+    clear_doc_folder_only_temp_files() # Clear local data folder for a truly new session
     st.session_state.rag_chain = None # Reset RAG chain
     st.session_state.vectorstore = None # Reset vectorstore
 
@@ -155,13 +162,12 @@ def load_chat_session(chat_id: str):
         st.error("Selected chat session not found.")
         return
 
-    # Clear local doc folder first to ensure only the active document is present
-    clear_doc_folder_for_current_session()
+    # No need to clear DOC_FOLDER or copy files back here, as all content will come from DB
 
     st.session_state.current_chat_id = chat_id
     st.session_state.active_chat_name = session_data['name']
-    st.session_state.current_document_name_for_session = session_data['document_name']
-    st.session_state.current_document_path_for_session = session_data['document_path']
+    # Load the list of document metadata (for display/download links)
+    st.session_state.current_documents_metadata = session_data.get('documents_metadata', [])
 
     # Load chat history from DB
     st.session_state.chat_history = load_chat_history_db(chat_id)
@@ -171,40 +177,31 @@ def load_chat_session(chat_id: str):
     st.session_state.vectorstore = None
     st.session_state.document_uploaded_for_current_session = False # Assume false until embeddings are loaded
 
-    # If document path exists, copy it back to DOC_FOLDER for operations that read the full file
-    # (e.g., summarization, challenge question generation)
-    if st.session_state.current_document_path_for_session and os.path.exists(st.session_state.current_document_path_for_session):
-        try:
-            dest_path = os.path.join(DOC_FOLDER, os.path.basename(st.session_state.current_document_path_for_session))
-            shutil.copy(st.session_state.current_document_path_for_session, dest_path)
-            logging.info(f"Copied document {st.session_state.current_document_name_for_session} back to DOC_FOLDER.")
-            # This flag indicates the *local file* is available for full-document operations
-            # The RAG readiness is determined by vectorstore loading below.
-        except Exception as e:
-            st.warning(f"Error restoring document file for chat session: {e}. Some features (summary, challenge) might be limited without the local file.")
-            logging.error(f"Error restoring document for chat session {chat_id}: {e}", exc_info=True)
-            # Do NOT set document_uploaded_for_current_session to True here, as it's about local file presence.
-            # The RAG readiness is handled by the vectorstore loading.
-
     # --- Crucial: Load vectorstore and rebuild RAG chain for the selected chat_id ---
     if st.session_state.embedding_model and st.session_state.llm:
-        st.session_state.vectorstore = load_existing_vector_db(st.session_state.embedding_model, st.session_state.current_chat_id)
-
-        if st.session_state.vectorstore:
-            st.session_state.rag_chain = create_rag_chain(st.session_state.llm)
-            # This flag now truly indicates if the RAG system is ready for Q&A
-            st.session_state.document_uploaded_for_current_session = True
-            st.success(f"Loaded chat '{st.session_state.active_chat_name}' with its document embeddings and history.")
-            # Update chunk count by querying the DB
-            st.session_state.current_document_chunks = get_num_chunks_for_session(st.session_state.current_chat_id)
-        else:
-            st.error("Failed to load knowledge base (embeddings) for this chat session. Q&A will not work. Please check DB connection and if embeddings exist.")
-            st.session_state.document_uploaded_for_current_session = False # RAG not ready
-            st.session_state.current_document_chunks = 0
+        with st.spinner(f"Loading knowledge base for '{st.session_state.active_chat_name}'..."):
+            # Attempt to load the existing vector DB for this chat session
+            vectorstore_loaded = load_existing_vector_db(st.session_state.embedding_model, st.session_state.current_chat_id)
+            
+            if vectorstore_loaded:
+                st.session_state.vectorstore = vectorstore_loaded
+                st.session_state.rag_chain = create_rag_chain(st.session_state.llm)
+                st.session_state.document_uploaded_for_current_session = True # RAG system is ready
+                st.success(f"Loaded chat '{st.session_state.active_chat_name}' with its document embeddings and history.")
+                # Update chunk count by querying the DB
+                st.session_state.current_document_chunks = get_num_chunks_for_session(st.session_state.current_chat_id)
+                # Also load the full document text from DB for summarization/challenge
+                st.session_state.current_session_full_document_text = get_all_document_chunks_text_for_session(st.session_state.current_chat_id)
+            else:
+                st.error("Failed to load knowledge base (embeddings) for this chat session. Q&A will not work. Please check DB connection and if embeddings exist.")
+                st.session_state.document_uploaded_for_current_session = False # RAG not ready
+                st.session_state.current_document_chunks = 0
+                st.session_state.current_session_full_document_text = "" # Ensure it's empty if DB load fails
     else:
         st.error("Embedding model or LLM not initialized. Cannot load knowledge base.")
         st.session_state.document_uploaded_for_current_session = False
         st.session_state.current_document_chunks = 0
+        st.session_state.current_session_full_document_text = ""
 
 
     # Reset other session-specific states
@@ -226,31 +223,49 @@ def delete_selected_chat_session(chat_id: str):
         reset_current_chat_session() # If current chat is deleted, start a new one
     st.rerun() # Rerun to update UI
 
-def process_uploaded_document_for_session(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile):
-    """Handles saving the uploaded file, processing it, and rebuilding the DB for the current session."""
+def process_uploaded_documents_for_session(uploaded_files: List[st.runtime.uploaded_file_manager.UploadedFile]):
+    """Handles saving the uploaded files, processing them, and rebuilding the DB for the current session."""
     if not st.session_state.current_chat_id:
         st.error("No active chat session. Please start a 'New Chat' first.")
         return
 
-    clear_doc_folder_for_current_session() # Clear previous documents in local folder
+    current_session_documents_metadata = st.session_state.current_documents_metadata # Get current list
+    files_to_process_for_embedding = [] # Paths of files that will be passed to create_vector_db_and_rebuild
 
-    saved_file_paths = []
-    
-    file_path = os.path.join(DOC_FOLDER, uploaded_file.name)
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    saved_file_paths.append(file_path)
+    for uploaded_file in uploaded_files:
+        file_path = os.path.join(DOC_FOLDER, uploaded_file.name)
+        
+        # Save the uploaded file to DOC_FOLDER (temporary staging)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        doc_info = {'name': uploaded_file.name, 'path': file_path}
 
-    # Update chat session metadata in DB
-    update_chat_session_document_metadata_db(
+        # Update metadata for the current session
+        existing_doc_index = -1
+        for i, doc_meta in enumerate(current_session_documents_metadata):
+            if doc_meta.get('name') == uploaded_file.name:
+                existing_doc_index = i
+                break
+
+        if existing_doc_index != -1:
+            current_session_documents_metadata[existing_doc_index] = doc_info
+            logging.info(f"Updated existing document '{uploaded_file.name}' path in metadata.")
+        else:
+            current_session_documents_metadata.append(doc_info)
+            logging.info(f"Added new document '{uploaded_file.name}' to metadata.")
+        
+        files_to_process_for_embedding.append(file_path) # Add to list for embedding
+
+    # Update session state with the modified list of documents
+    st.session_state.current_documents_metadata = current_session_documents_metadata
+
+    # Update chat session metadata in DB with the COMPLETE list of documents
+    update_chat_session_documents_metadata_db(
         st.session_state.current_chat_id,
-        uploaded_file.name,
-        file_path # Store the local path
+        st.session_state.current_documents_metadata # Pass the full list
     )
-    st.session_state.current_document_path_for_session = file_path
-    st.session_state.current_document_name_for_session = uploaded_file.name
-    # document_uploaded_for_current_session will be set to True upon successful vectorstore creation below
-
+    
     # Reset chat history and challenge mode when new documents are uploaded
     st.session_state.chat_history = []
     reset_challenge_mode()
@@ -268,40 +283,40 @@ def process_uploaded_document_for_session(uploaded_file: st.runtime.uploaded_fil
     embedding_model = st.session_state.embedding_model
     llm = st.session_state.llm # Use the already initialized LLM
 
-    # Models should already be initialized globally, but a check doesn't hurt
-    if not embedding_model:
-        embedding_model = get_embedding_model()
-        st.session_state.embedding_model = embedding_model
-
-    if not llm: # Re-initialize LLM if it somehow became None (e.g., due to API key error)
-        llm = get_llm(st.session_state.llm_choice)
-        st.session_state.llm = llm
-
     if embedding_model and llm:
-        # Pass the specific file paths and current chat ID to rebuild
+        # Pass only the newly uploaded files for processing, as create_vector_db_and_rebuild
+        # will clear and rebuild the collection for the session.
+        # This function now ensures that the original files are read and embedded.
         num_chunks = create_vector_db_and_rebuild(
             embedding_model,
-            documents_to_process=saved_file_paths,
+            documents_to_process_paths=files_to_process_for_embedding, # Only process newly uploaded files
             chat_session_id=st.session_state.current_chat_id,
             progress_bar=progress_bar,
             status_text=status_placeholder
         )
         st.session_state.current_document_chunks = num_chunks # Store number of chunks
 
-        st.session_state.vectorstore = load_existing_vector_db(embedding_model, st.session_state.current_chat_id) # Reload vectorstore after rebuild
+        # After rebuilding, always attempt to load the vectorstore for the current session
+        st.session_state.vectorstore = load_existing_vector_db(embedding_model, st.session_state.current_chat_id)
 
         if st.session_state.vectorstore:
             st.session_state.rag_chain = create_rag_chain(llm) # Pass LLM, not vectorstore here
             st.session_state.document_uploaded_for_current_session = True # Set to True here
             status_placeholder.success("Document(s) processed and knowledge base ready for this chat!")
+            # Load full document text from DB immediately after successful embedding
+            st.session_state.current_session_full_document_text = get_all_document_chunks_text_for_session(st.session_state.current_chat_id)
         else:
             status_placeholder.error("Failed to create vector database. Please check logs.")
             st.session_state.document_uploaded_for_current_session = False # Set to False on failure
+            st.session_state.current_session_full_document_text = "" # Clear if DB fails
         progress_bar.progress(100) # Ensure progress bar is full
     else:
         status_placeholder.error("LLM or Embedding model could not be initialized. Check configuration.")
         st.session_state.document_uploaded_for_current_session = False # Set to False on model init failure
+        st.session_state.current_session_full_document_text = ""
     
+    # Clear the temporary DOC_FOLDER files after they have been processed and embedded
+    clear_doc_folder_only_temp_files()
 
     st.session_state.chat_sessions_list = load_chat_sessions_db() # Reload sessions list to reflect document update
     st.rerun() # Rerun to update UI with new document
@@ -409,8 +424,10 @@ with st.sidebar:
             col1, col2 = st.columns([0.8, 0.2])
             with col1:
                 display_name = session['name']
-                if session['document_name']:
-                    display_name += f" ({session['document_name']})"
+                # Display document names if available
+                if session['documents_metadata']:
+                    doc_names = ", ".join([d['name'] for d in session['documents_metadata']])
+                    display_name += f" ({doc_names})"
                 if session['id'] == st.session_state.current_chat_id:
                     st.markdown(f"**➡️ {display_name}** <small>({session['created_at']})</small>", unsafe_allow_html=True)
                 else:
@@ -427,13 +444,27 @@ with st.sidebar:
         st.info("No past chats. Click '➕ New Chat' to start one!")
 
     st.markdown("---")
-    st.subheader("Current Chat Document")
+    st.subheader("Current Chat Document(s)") 
     if st.session_state.current_chat_id:
         st.markdown(f"**Active Chat:** `{st.session_state.active_chat_name}`")
-        if st.session_state.current_document_name_for_session:
-            st.markdown(f"**Document:** `{st.session_state.current_document_name_for_session}`")
+        
+        if st.session_state.current_documents_metadata:
+            st.markdown(f"**Document(s):**")
+            for doc_meta in st.session_state.current_documents_metadata:
+                doc_name = doc_meta.get('name')
+                doc_path = doc_meta.get('path') # This is the original path where it was uploaded
+                
+                if doc_name and doc_path:
+                    # Provide download button for the original file path
+                    # This will attempt to download from the original path, not necessarily DOC_FOLDER
+                    if os.path.exists(doc_path):
+                        create_base64_download_button(doc_path, label=f"📄 Download {doc_name}")
+                    else:
+                        st.info(f"Original file '{doc_name}' not found at its stored path. Document content for Q&A, Summarization, Challenge, and Comparison is retrieved from the database.")
+                else:
+                    st.warning("Invalid document metadata found for this chat.")
         else:
-            st.info("No document uploaded for this chat.")
+            st.info("No document(s) uploaded for this chat.")
 
         # Allow renaming current chat
         new_chat_name = st.text_input("Rename Chat:", value=st.session_state.active_chat_name, key="rename_chat_input")
@@ -443,25 +474,28 @@ with st.sidebar:
             st.session_state.chat_sessions_list = load_chat_sessions_db() # Reload to update sidebar name
             st.rerun()
 
-        # Changed to accept_multiple_files=False, so uploaded_files will be a single UploadedFile object or None
-        uploaded_file = st.file_uploader(
+        # Changed to accept_multiple_files=True
+        uploaded_files = st.file_uploader(
             "Upload document(s) for this chat",
             type=["pdf", "txt"],
-            accept_multiple_files=False, # Only one document per chat session
+            accept_multiple_files=True, # Allow multiple documents
             key="document_uploader_main"
         )
 
-        # Check if a new file was uploaded for the current session
-        # Now check if uploaded_file is not None, and if its name is different
-        # Also ensure that if there was no doc previously, and a new one is uploaded, it processes
-        if uploaded_file is not None and (
-            (st.session_state.current_document_name_for_session is None) or # No doc previously
-            (uploaded_file.name != st.session_state.current_document_name_for_session) or # Different doc
-            (not st.session_state.document_uploaded_for_current_session and st.session_state.current_document_name_for_session is None) # Or doc was not marked as uploaded and no doc was associated
-        ):
-            # Only process if a new file is uploaded or if the current session has no document associated and a file is uploaded
-            process_uploaded_document_for_session(uploaded_file) 
-            st.rerun() # Rerun to update UI with new document
+        # Process uploaded files if any new ones are detected
+        if uploaded_files:
+            # Check if any of the uploaded files are genuinely new or updated
+            new_files_detected = False
+            for uploaded_file in uploaded_files:
+                existing_doc_names = {d['name'] for d in st.session_state.current_documents_metadata}
+                if uploaded_file.name not in existing_doc_names:
+                    new_files_detected = True
+                    break
+            
+            # If new files are detected or it's the first upload for this session
+            if new_files_detected or (not st.session_state.current_documents_metadata and uploaded_files):
+                process_uploaded_documents_for_session(uploaded_files) 
+                st.rerun() # Rerun to update UI with new document(s)
 
     st.markdown("---")
     st.subheader("About")
@@ -573,16 +607,24 @@ st.markdown(
 
 st.header(f"Chat Session: {st.session_state.active_chat_name}")
 
-if st.session_state.current_document_name_for_session:
-    st.markdown(f"### Current Document: {st.session_state.current_document_name_for_session}")
-    # Ensure the document path is valid before attempting to create a download button
-    if st.session_state.current_document_path_for_session and os.path.exists(st.session_state.current_document_path_for_session):
-        create_base64_download_button(st.session_state.current_document_path_for_session, label=f"📄 Download {st.session_state.current_document_name_for_session}")
-    else:
-        st.warning("Document file not found locally. Some features (summary, challenge) might be limited, but Q&A should work if embeddings exist.")
+if st.session_state.current_documents_metadata:
+    st.markdown(f"### Current Document(s):")
+    for doc_meta in st.session_state.current_documents_metadata:
+        doc_name = doc_meta.get('name')
+        doc_path = doc_meta.get('path') # This is the original path where it was uploaded
+        
+        if doc_name and doc_path:
+            # Provide download button for the original file path
+            # This will attempt to download from the original path, not necessarily DOC_FOLDER
+            if os.path.exists(doc_path):
+                create_base64_download_button(doc_path, label=f"📄 Download {doc_name}")
+            else:
+                st.info(f"Original file '{doc_name}' not found locally at '{doc_path}'. Document content for Q&A, Summarization, Challenge, and Comparison is retrieved from the database.")
+        else:
+            st.warning("Invalid document metadata found for this chat.")
     st.markdown(f"**Total Chunks:** {st.session_state.current_document_chunks}")
 else:
-    st.info("No document uploaded for this chat session. Please upload one using the uploader in the sidebar to enable RAG features.")
+    st.info("No document(s) uploaded for this chat session. Please upload one or more using the uploader in the sidebar to enable RAG features.")
 
 st.markdown("---")
 
@@ -590,8 +632,8 @@ st.markdown("---")
 tab1, tab2, tab3, tab4 = st.tabs(["❓ Ask Anything (Intelligent Q&A)", "📝 Summarize Document", "🧠 Challenge Me!", "📊 Document Comparison"])
 
 with tab1: # Ask Anything Mode
-    st.markdown("### ❓ Ask Anything about the Document")
-    st.info("Ask questions and get answers with supporting snippets from your document. You can ask follow-up questions!")
+    st.markdown("### ❓ Ask Anything about the Document(s)")
+    st.info("Ask questions and get answers with supporting snippets from your document(s). You can ask follow-up questions!")
 
     # Chat history container
     chat_history_container = st.container(border=False)
@@ -605,7 +647,7 @@ with tab1: # Ask Anything Mode
                     with st.expander("🔍 Supporting Snippets"):
                         for i, snippet in enumerate(message["snippets"]):
                             st.markdown(f"**Snippet {i+1}:**")
-                            st.markdown(f"> *{snippet}*") # Use blockquote for snippets for better visual distinction
+                            st.markdown(f"> *{snippet}*") 
         st.markdown('</div>', unsafe_allow_html=True)
 
     # Export Chat History button
@@ -621,38 +663,41 @@ with tab1: # Ask Anything Mode
 
 with tab2: # Summarize Document Mode
     st.markdown("### 📝 Document Summary")
-    st.info("Get a concise summary of your uploaded document.")
+    st.info("Get a concise summary of your uploaded document(s).")
 
-    # Summarization requires the local document file to read its full content
-    if st.session_state.current_document_path_for_session and os.path.exists(st.session_state.current_document_path_for_session):
+    # Summarization now relies on content retrieved from the database
+    if st.session_state.current_document_chunks > 0: # Check if there are chunks in DB
         if not st.session_state.summary_generated:
             with st.spinner("Generating document summary..."):
-                all_document_content = get_document_content_for_summary(st.session_state.current_document_path_for_session)
+                # Get content directly from DB using the current chat ID
+                all_document_content = get_document_content_for_summary(st.session_state.current_chat_id)
 
                 if all_document_content.strip() and st.session_state.llm:
                     st.session_state.auto_summary = generate_auto_summary(all_document_content, st.session_state.llm)
                     st.session_state.summary_generated = True # Set flag to true
                     st.rerun() # Rerun to display summary
                 else:
-                    st.warning("Cannot generate summary. Document content not available or LLM not initialized.")
+                    st.warning("Cannot generate summary. Document content not available from database or LLM not initialized.")
 
         if st.session_state.auto_summary:
             st.markdown("#### Concise Summary (≤ 150 words)")
             st.info(st.session_state.auto_summary)
         else:
-            st.warning("Summary not available. Document might be too large or AI model failed to summarize.")
+            st.warning("Summary not available. Document content might be empty in DB or AI model failed to summarize.")
     else:
-        st.info("Please upload a document to generate a summary. The original document file is required for summarization.")
+        st.info("No document content found in the database for summarization. Please upload document(s) to enable this feature.")
 
 with tab3: # Challenge Me Mode
     st.markdown("### 🧠 Challenge Me!")
-    st.info("The assistant will generate logic-based questions from the document. Try to answer them!")
+    st.info("The assistant will generate logic-based questions from the document(s). Try to answer them!")
 
-    # Challenge mode requires the local document file to read its full content
-    if st.session_state.current_document_path_for_session and os.path.exists(st.session_state.current_document_path_for_session):
+    # Challenge mode now relies on content retrieved from the database
+    if st.session_state.current_document_chunks > 0: # Check if there are chunks in DB
         if st.button("Generate New Questions", key="generate_questions_button"):
             reset_challenge_mode() # Clear previous questions and answers
-            all_document_content_for_challenge = get_document_content_for_summary(st.session_state.current_document_path_for_session)
+            
+            # Get content directly from DB using the current chat ID
+            all_document_content_for_challenge = get_all_document_chunks_text_for_session(st.session_state.current_chat_id)
 
             if all_document_content_for_challenge.strip() and st.session_state.llm:
                 with st.spinner("Generating challenge questions..."):
@@ -662,7 +707,8 @@ with tab3: # Challenge Me Mode
                     st.session_state.evaluation_results = [{}] * len(questions)
                     st.rerun() # Rerun to display new questions
             else:
-                st.warning("Cannot generate questions. Document content not available or LLM not initialized.")
+                st.warning("Cannot generate questions. Document content not available from database or LLM not initialized.")
+
 
         if st.session_state.challenge_questions:
             st.markdown("#### Your Challenge Questions:")
@@ -671,7 +717,8 @@ with tab3: # Challenge Me Mode
                 st.session_state.user_answers[i] = st.text_area(f"Your answer for Q{i+1}:", value=st.session_state.user_answers[i], key=f"user_answer_{i}")
 
             if st.button("Evaluate My Answers", key="evaluate_answers_button"):
-                all_document_content_for_challenge = get_document_content_for_summary(st.session_state.current_document_path_for_session)
+                # Get content directly from DB using the current chat ID
+                all_document_content_for_challenge = get_all_document_chunks_text_for_session(st.session_state.current_chat_id)
 
                 if all_document_content_for_challenge.strip() and st.session_state.llm:
                     with st.spinner("Evaluating your answers..."):
@@ -689,7 +736,7 @@ with tab3: # Challenge Me Mode
                                 }
                     st.rerun() # Rerun to display evaluations
                 else:
-                    st.warning("Cannot evaluate answers. Document content not available or LLM not initialized.")
+                    st.warning("Cannot evaluate answers. Document content not available from database or LLM not initialized.")
 
             st.markdown("#### Evaluation Results:")
             for i, result in enumerate(st.session_state.evaluation_results):
@@ -712,16 +759,15 @@ with tab3: # Challenge Me Mode
                     key="download_challenge_results"
                 )
     else:
-        st.info("Please upload a document to generate challenge questions. The original document file is required for this feature.")
+        st.info("No document content found in the database to generate challenge questions. Please upload document(s) to enable this feature.")
 
 
 with tab4: # Document Comparison Mode
     st.markdown("### 📊 Compare Documents")
     st.info("Enter a concept or topic to compare how it's discussed across your uploaded documents.")
 
-    if not st.session_state.document_uploaded_for_current_session:
-        st.warning("Please upload a document and ensure its knowledge base is built to enable document comparison.")
-    else:
+    # Document comparison now relies on embeddings and retrieved chunks from the database
+    if st.session_state.current_document_chunks > 0: # Check if there are chunks in DB
         comparison_query = st.text_input("What concept or topic would you like to compare?", key="comparison_query")
         if st.button("Compare Documents", key="compare_button", disabled=not comparison_query.strip()):
             if st.session_state.llm and st.session_state.vectorstore:
@@ -734,13 +780,15 @@ with tab4: # Document Comparison Mode
                     )
                     st.rerun() # Rerun to display comparison result
             else:
-                st.warning("LLM or Vectorstore not initialized. Please ensure a document is uploaded and processed.")
+                st.warning("LLM or Vectorstore not initialized. Please ensure document(s) are uploaded and processed.")
 
         if st.session_state.comparison_result:
             st.markdown("#### Comparison Analysis:")
             st.markdown(st.session_state.comparison_result)
         else:
             st.info("Enter a query and click 'Compare Documents' to see the analysis.")
+    else:
+        st.info("No document content found in the database for comparison. Please upload document(s) to enable this feature.")
 
 
 # --- Fixed Input at the Bottom (Always Visible) ---
@@ -748,10 +796,10 @@ st.markdown('<div class="fixed-input-container">', unsafe_allow_html=True)
 # The chat input is enabled if document_uploaded_for_current_session is True,
 # which now correctly reflects if the RAG chain and vectorstore are ready.
 if st.session_state.document_uploaded_for_current_session:
-    user_question = st.chat_input("Ask a question about the document...", key="chat_input_bottom_fixed")
+    user_question = st.chat_input("Ask a question about the document(s)...", key="chat_input_bottom_fixed")
 else:
     # Show a disabled input or a message if no document is uploaded or embeddings failed to load
-    st.text_input("Please upload a document to ask questions.", disabled=True, key="chat_input_disabled")
+    st.text_input("Please upload document(s) to ask questions.", disabled=True, key="chat_input_disabled")
     user_question = None # Ensure user_question is None if input is disabled
 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -797,7 +845,7 @@ if user_question:
                 st.session_state.chat_history.append(error_message_data)
                 save_chat_message_db(st.session_state.current_chat_id, "assistant", error_message_data["content"])
         else:
-            warning_message = "Please upload a document and ensure the knowledge base is built for this chat session to ask questions."
+            warning_message = "Please upload document(s) and ensure the knowledge base is built for this chat session to ask questions."
             st.warning(warning_message)
             warning_message_data = {"role": "assistant", "content": warning_message}
             st.session_state.chat_history.append(warning_message_data)
