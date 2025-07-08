@@ -1,4 +1,4 @@
-# 📚 QueryDoc AI
+# 📚 QueryDoc AI: Smart Document Assistant
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.0+-red.svg)](https://streamlit.io/)
@@ -6,59 +6,108 @@
 
 ## 🚀 Overview
 
-The **QueryDoc AI** is an intelligent Streamlit-based application designed to help users interact with their documents through various AI-powered functionalities. It leverages **Retrieval Augmented Generation (RAG)** to answer questions based on uploaded documents, summarizes content, generates and evaluates challenge questions, and compares information across multiple documents.
+**QueryDoc AI** is a Streamlit-based web application designed to help users interact with their documents using advanced Large Language Models (LLMs) and Retrieval-Augmented Generation (RAG) techniques. It allows users to upload PDF or TXT documents, ask questions, get summaries, engage in challenge mode, and compare information across multiple documents. The application leverages PostgreSQL with PGVector for efficient document storage and retrieval.
 
-The application supports both **Google's Gemini LLM** and **local Ollama models**, providing flexibility in AI model selection. It uses **PostgreSQL with PGVector** for efficient document indexing and retrieval, enabling powerful semantic search and AI-driven insights directly from your research materials.
+![image](https://github.com/user-attachments/assets/82e0b643-078d-4586-a190-9a3c8f1c17cb)
+
+## 📊 Project Flow Diagram
+
+The diagram below captures the rightward data and interaction flow within **QueryDoc AI**, from user inputs to LLM-based output generation. It outlines key components like Streamlit UI, document processing, vector storage, RAG interaction, and result rendering.
+
+![diagram-export-7-9-2025-12_04_13-AM](https://github.com/user-attachments/assets/1ce34592-7959-4a2f-9bae-02900ae5c06a)
+
+> **Main Flow Includes**:
+> - **User Actions**: Upload documents, select LLMs, manage chat, and enter prompts  
+> - **Document Processing**: Chunking, embedding, and storing documents in PGVector  
+> - **LLM Initialization**: Choose Gemini (cloud) or Ollama (local) models  
+> - **RAG Modes**: Ask Anything, Summarize, Challenge, and Compare Documents  
+> - **Data Access**: Pulls relevant embeddings from the vector DB for LLM queries  
+> - **Results Rendering**: Processed answers and summaries shown via Streamlit  
+
+## 🎥 Demo & Documentation
+
+### 🎥 Video Demo  
+[![Watch the Demo](https://img.shields.io/badge/Watch%20Demo-Loom-FF6B6B?style=for-the-badge&logo=loom)](https://www.loom.com/share/3eedd9ec6ec24900a80bd3816840b25d?sid=524c0bc7-e69c-4415-9727-92913c0eeb3e)
+
+### 📄 Project Report  
+[![View Report](https://img.shields.io/badge/View%20Report-Google%20Docs-4285F4?style=for-the-badge&logo=googledocs&logoColor=white)](https://docs.google.com/document/d/1mBcF8HrJaba2aH0Db8vorfT5cFaCkrl0QnLRIWUB62c/edit?usp=sharing)
 
 ## ✨ Features
 
-### 📄 Document Management
-- **Document Upload**: Upload PDF and TXT documents with automatic processing and indexing
-- **Persistent Storage**: Documents are stored locally and indexed for efficient querying
-- **Multi-Document Support**: Handle multiple documents within sessions for comprehensive research
+### 📄 Document Upload & Processing
+- **Easy Upload**: Upload PDF or TXT documents through the intuitive interface
+- **Intelligent Processing**: Documents are automatically split into chunks and embedded into a vector database
+- **Multi-Document Support**: Handle multiple documents for comprehensive research
 
-### 💬 Chat System
-- **Persistent Chat Sessions**: Create, load, rename, and delete chat sessions
-- **Session History**: All chat history and associated document metadata saved in PostgreSQL database
-- **Context Continuity**: Maintain conversation context across sessions
+### 💬 Persistent Chat Sessions
+- **Session Management**: Create new chat sessions or load existing ones
+- **Complete History**: All interactions are saved with chat history and associated documents
+- **Session Operations**: Rename, delete, and organize your chat sessions
 
-### 🧠 AI-Powered Interactions
-- **Retrieval Augmented Generation (RAG)**: Ask questions about uploaded documents and get accurate, context-aware answers with source citations
-- **Automated Summarization**: Generate concise summaries of uploaded documents with a single click
-- **Flexible LLM Support**: Seamlessly switch between Google's Gemini models and self-hosted local LLMs via Ollama
+### 🧠 Flexible LLM Integration
+- **Gemini Models**: Integrate with Google's Gemini models (e.g., `gemini-1.5-flash-latest`) via API key
+- **Local LLM Support**: Connect to local LLMs served via Ollama (e.g., `llama3.2:1b`) for enhanced privacy and control
+- **Easy Switching**: Seamlessly switch between different LLM providers
 
-### 💡 Challenge Mode
-- **Question Generation**: Automatically generate logic-based challenge questions from document content
-- **Answer Evaluation**: Evaluate user answers based on accuracy, completeness, and clarity with structured feedback
-- **Comprehension Testing**: Test your understanding with AI-generated questions tailored to your documents
+### 🎯 Interactive Modes
 
-### 📊 Advanced Features
-- **Document Comparison**: Compare concepts or findings across multiple uploaded documents
-- **Vector Database Integration**: Utilizes PGVector for storing and querying document embeddings
-- **HNSW Indexing**: Optimized search performance with Hierarchical Navigable Small World indexing
-- **Source Citations**: Get detailed references to original document sections for all AI responses
+#### Ask Anything (RAG)
+- Ask questions about your uploaded documents
+- Get accurate, context-aware answers with direct source citations
+- Leverages retrieval-augmented generation for precise responses
 
-## 🛠️ Technical Stack
+![image](https://github.com/user-attachments/assets/7fb18304-868a-4246-8101-19f271c57bd2)
+
+#### Auto Summary
+- Generate concise summaries of your entire document
+- Summarize individual chunks for focused insights
+- Quick overview of key document content
+
+![image](https://github.com/user-attachments/assets/5d93bd75-d0e9-48e4-bf15-ffbbb9d65985)
+
+#### Challenge Mode
+- Test your understanding with AI-generated logic-based questions
+- Questions are based on your document content
+- Get evaluated on accuracy, completeness, and clarity with detailed feedback
+
+![image](https://github.com/user-attachments/assets/cb6561f7-b7de-4f86-b474-327bc80e98b4)
+
+#### Document Comparison
+- Compare concepts or findings across multiple uploaded documents
+- Identify commonalities, differences, and contradictions
+- Cross-reference information from different sources
+
+![image](https://github.com/user-attachments/assets/38ecb670-a1fa-4148-b505-ade32bbd0bea)
+
+### 🔧 Technical Features
+- **PostgreSQL with PGVector**: Efficient vector database storage and similarity search
+- **Configurable**: Easy switching between LLMs, embedding models, and database connections
+- **Comprehensive Logging**: Detailed insights into application operations for debugging
+- **Environment Variables**: Secure configuration management
+
+## 🛠️ Technologies Used
 
 | Component | Technology |
 |-----------|------------|
 | **Frontend** | Streamlit |
-| **Backend Logic** | Python |
-| **Large Language Models** | Google Gemini (`gemini-1.5-flash-latest`) & Local LLMs (Ollama) |
-| **Embedding Model** | HuggingFace Sentence Transformers (`all-MiniLM-L6-v2`) |
-| **Vector Database** | PostgreSQL with PGVector extension |
-| **Document Processing** | LangChain, PyPDFLoader, TextLoader |
-| **Text Splitting** | RecursiveCharacterTextSplitter |
-| **Additional Libraries** | psycopg2, python-dotenv, PIL, numpy |
+| **Backend** | Python 3.9+ |
+| **RAG Pipeline** | LangChain |
+| **Embeddings** | HuggingFace Sentence Transformers (`all-MiniLM-L6-v2`) |
+| **Vector Database** | PostgreSQL with PGVector |
+| **Database Adapter** | psycopg2 |
+| **Environment Management** | python-dotenv |
+| **Cloud LLM** | Google Generative AI (Gemini) |
+| **Local LLM** | ChatOllama (LangChain Community) |
+| **Document Processing** | PyPDF for PDF handling |
 
 ## 📋 Prerequisites
 
-Before you begin, ensure you have the following installed:
+Before setting up the application, ensure you have:
 
 - **Python 3.9+**
-- **PostgreSQL** (version 13 or higher recommended)
-- **Google API Key** for Gemini (optional, if using Gemini LLM)
-- **Ollama** (optional, if using local LLMs)
+- **PostgreSQL** (with vector extension support)
+- **Google API Key** (optional, for Gemini integration)
+- **Ollama** (optional, for local LLM support)
 
 ## 🔧 Setup and Installation
 
@@ -66,14 +115,19 @@ Before you begin, ensure you have the following installed:
 
 ```bash
 git clone https://github.com/alokagarwal565/ez_project.git
-cd smart-research-assistant
+cd ez_project
 ```
 
 ### Step 2: Create Virtual Environment
 
 ```bash
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# On Windows
+.\venv\Scripts\activate
+
+# On macOS/Linux
+source venv/bin/activate
 ```
 
 ### Step 3: Install Dependencies
@@ -82,177 +136,157 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Step 4: Set Up Environment Variables
+> **Note**: The `requirements.txt` typically contains: `streamlit`, `langchain`, `langchain-community`, `langchain-huggingface`, `psycopg2-binary`, `python-dotenv`, `google-generativeai`, `pypdf`
 
-Create a `.env` file in the root directory of the project and populate it with your credentials:
+### Step 4: Configure Environment Variables
+
+Create a `.env` file in the project's root directory (next to the `src` folder):
 
 ```env
-# Google API Key (for Gemini LLM)
+# Google API Key (for Gemini) - Optional if only using local LLM
 GOOGLE_API_KEY="YOUR_GEMINI_API_KEY"
 
-# PostgreSQL Database Credentials
+# PostgreSQL Connection Details
 PG_USER="your_pg_user"
 PG_PASSWORD="your_pg_password"
 PG_HOST="localhost"
 PG_PORT="5432"
 PG_DBNAME="your_database_name"
+
+# Ollama Settings (for Local LLM) - Optional if only using Gemini
+OLLAMA_BASE_URL="http://localhost:11434"  # Or your Ollama server address
+LOCAL_LLM_MODEL_NAME="llama3.2:1b"       # Or your preferred local Ollama model
 ```
 
-> **⚠️ Important**: Replace the placeholder values with your actual credentials and ensure the `PG_DBNAME` database exists in your PostgreSQL server.
+> **Important**: 
+> - Replace placeholders with your actual credentials
+> - Ensure your PostgreSQL database specified in `PG_DBNAME` exists
+> - If using Ollama, ensure it's running and the specified model is pulled
 
-### Step 5: Set Up PostgreSQL with PGVector
+### Step 5: Initialize the Database
 
-#### Install PostgreSQL and PGVector Extension
-
-1. **Install PostgreSQL** (version 13+)
-2. **Enable PGVector extension**:
-   ```sql
-   CREATE EXTENSION vector;
-   ```
-
-#### Initialize Database Schema
+Run the initialization script to create necessary tables and the vector extension:
 
 ```bash
 python src/init_db.py
 ```
 
-This script will create the necessary tables for PGVector and chat session management.
+This script will create:
+- `langchain_pg_collection` and `langchain_pg_embedding` tables
+- Chat session related tables
+- Vector extension in PostgreSQL
 
 ### Step 6: Set Up Ollama (Optional)
 
-If you plan to use local LLMs:
+If you plan to use local LLM via Ollama:
 
-1. **Download and install Ollama** from [ollama.ai](https://ollama.ai)
-2. **Pull your desired model**:
+1. **Download and Install Ollama**: Follow instructions on the [Ollama website](https://ollama.ai)
+
+2. **Pull a Model**: 
    ```bash
    ollama pull llama3.2:1b
    ```
 
-### Step 7: Run the Application
+3. **Update Environment**: Set `LOCAL_LLM_MODEL_NAME="llama3.2:1b"` in your `.env` file
+
+## 🚀 Usage
+
+### Start the Application
 
 ```bash
 streamlit run src/main.py
 ```
 
-Your web browser should automatically open the Streamlit application at `http://localhost:8501`.
+This will open the application in your web browser.
 
-## 🎯 Usage
+### Using the Application
 
-### 1. Start a New Chat Session
-- Click "New Chat" in the sidebar to begin a new session
-- All sessions are automatically saved and can be accessed later
+#### 1. Choose Your LLM
+- Select "Gemini" or "Local LLM (Ollama)" from the sidebar
+- Switch between models as needed
 
-### 2. Upload Documents
-- Use the "Upload Document" section to upload PDF or TXT files
-- Documents are automatically processed, chunked, and embedded into the vector database
-- Multiple documents can be uploaded to the same session
+#### 2. Upload Documents
+- Use the "Upload Document" section to add PDF or TXT files
+- Click "Build Knowledge Base" to process documents and store them in the vector database
 
-### 3. Select Your AI Model
-- Choose between "Gemini" or "Local LLM (Ollama)" from the sidebar
-- Switch models anytime during your session
+#### 3. Chat Sessions
+- **New Chat**: Click "New Chat" button to create a fresh session
+- **Load Chat**: Use the dropdown to resume previous conversations with associated documents
+- **Manage Sessions**: Rename or delete chat sessions as needed
 
-### 4. Interaction Modes
+#### 4. Select Interaction Mode
+Choose from the available modes:
+- **Ask Anything**: Query your documents with natural language
+- **Summarize Document**: Get concise document summaries
+- **Challenge Mode**: Test your understanding with AI-generated questions
+- **Compare Documents**: Analyze multiple documents for insights
 
-#### Ask Anything (RAG Q&A)
-- Type your questions in the chat input
-- Get accurate, context-aware answers with source citations
-- AI responses include references to original document sections
-
-#### Auto Summary
-- Click "Generate Auto-Summary" to get a concise summary of uploaded documents
-- Summaries are automatically generated and can be regenerated as needed
-
-#### Challenge Mode
-- Generate logic-based challenge questions from your document content
-- Answer the questions and receive detailed evaluations
-- Get feedback on accuracy, completeness, and clarity with structured scoring
-
-#### Document Comparison
-- Compare insights and findings across multiple uploaded documents
-- Identify relationships and contrasts between different sources
-
-### 5. Manage Chat Sessions
-- View all your chat sessions in the sidebar
-- Click on any session to load its history and associated documents
-- Rename or delete sessions as needed
-- All chat history is preserved across sessions
-
-## 📁 Project Structure
+## 🗂️ Project Structure
 
 ```
 .
 ├── .env                      # Environment variables (create this file)
 ├── requirements.txt          # Python dependencies
 ├── src/
-│   ├── main.py              # Main Streamlit application entry point
-│   ├── config.py            # Configuration settings (paths, LLM names, DB connections)
-│   ├── rag_pipeline.py      # RAG pipeline logic, document processing, LLM handling, DB operations
-│   ├── challenge_mode.py    # Logic for generating and evaluating challenge questions
-│   ├── init_db.py           # Script to initialize PostgreSQL database schema
-│   ├── clear_db.py          # Script to clear PostgreSQL database tables
-│   ├── helpers.py           # Utility functions (cosine similarity, download button, HNSW indexing)
-│   └── prompt_templates.py  # Stores various prompt templates for LLM interactions
-└── data/                     # Folder for temporarily storing uploaded documents (created automatically)
+│   ├── main.py              # Main Streamlit application
+│   ├── config.py            # Configuration settings
+│   ├── rag_pipeline.py      # RAG pipeline logic and document processing
+│   ├── challenge_mode.py    # Challenge mode functionality
+│   ├── init_db.py           # Database initialization script
+│   ├── clear_db.py          # Database clearing utility (use with caution)
+│   ├── helpers.py           # Utility functions
+│   └── prompt_templates.py  # LLM prompt templates
+└── data/                     # Document storage (created automatically)
 ```
 
-## 🔧 Database Management
+## ⚠️ Important Notes
 
-### Initialize Database
-```bash
-python src/init_db.py
+### Database Management
+- **Clear Database**: Use `python src/clear_db.py` with extreme caution as it will delete all stored data
+- **Backup**: Regular backups of your PostgreSQL database are recommended
+
+### Development Status
+This application is under active development. Features may be added or modified. Refer to the specific code files for the most up-to-date implementation details.
+
+## 🔧 Advanced Configuration
+
+### PostgreSQL Setup
+Ensure the vector extension is enabled in your PostgreSQL instance:
+
+```sql
+CREATE EXTENSION vector;
 ```
 
-### Clear Database (if needed)
-```bash
-python src/clear_db.py
-```
+If you don't have privileges to create extensions, contact your database administrator.
 
-## 🚀 Advanced Features
-
-### Vector Search Optimization
-- **HNSW Indexing**: Hierarchical Navigable Small World indexing for faster vector searches
-- **Cosine Similarity**: Efficient similarity calculations for document retrieval
-- **Chunking Strategy**: Intelligent text splitting for optimal embedding performance
-
-### Multi-Model Support
-- **Gemini Integration**: Google's latest Gemini models via `google-generativeai` library
-- **Local LLM Support**: Self-hosted models through Ollama integration
-- **Seamless Switching**: Change between models without losing session context
-
-### Session Persistence
-- **Database Storage**: All chat sessions and metadata stored in PostgreSQL
-- **Document Association**: Each session maintains links to its uploaded documents
-- **History Preservation**: Complete conversation history across all sessions
+### Logging
+The application includes comprehensive logging for debugging and monitoring application operations.
 
 ## 🤝 Contributing
 
-Contributions are welcome! Here's how you can help:
-
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/AmazingFeature`)
-3. **Commit** your changes (`git commit -m 'Add some AmazingFeature'`)
-4. **Push** to the branch (`git push origin feature/AmazingFeature`)
-5. **Open** a Pull Request
-
-Please ensure your code follows the existing style and includes appropriate tests.
+Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 🆘 Support
 
-If you encounter any problems or have questions:
-
-1. Check the [Issues](https://github.com/alokagarwal565/ez_project/issues) page
-2. Create a new issue with detailed information about your setup and the error
-3. Include relevant logs and environment details
+If you encounter issues:
+1. Check the logs for detailed error information
+2. Ensure all prerequisites are properly installed
+3. Verify your environment variables are correctly configured
+4. Consult the demo video and project report for guidance
 
 ## 🙏 Acknowledgments
 
-- [Google Gemini](https://deepmind.google/technologies/gemini/) for the powerful language model
+- [Google Gemini](https://deepmind.google/technologies/gemini/) for powerful language models
 - [Ollama](https://ollama.ai/) for local LLM support
-- [Streamlit](https://streamlit.io/) for the amazing web framework
-- [PGVector](https://github.com/pgvector/pgvector) for efficient vector storage
-- [LangChain](https://python.langchain.com/) for the RAG pipeline components
-- [HuggingFace](https://huggingface.co/) for the embedding models
+- [Streamlit](https://streamlit.io/) for the web application framework
+- [LangChain](https://python.langchain.com/) for RAG pipeline components
+- [PGVector](https://github.com/pgvector/pgvector) for vector database capabilities
+- [HuggingFace](https://huggingface.co/) for embedding models
 
 ---
 
-**Made with ❤️ by [Alok Agarwal]**
+**QueryDoc AI: Making Document Intelligence Accessible**
+
+---
+
+**Made with ❤️ by [Alok Agarwal](https://github.com/alokagarwal565)**
