@@ -1,6 +1,6 @@
 # ===============================================================
 # File: src/init_db.py
-# Description: Initializes the PostgreSQL database with tables required by PGVector.
+# Description: Initializes the PostgreSQL database with tables required by PGVector and chat sessions.
 # ===============================================================
 
 import psycopg2
@@ -22,7 +22,7 @@ except ImportError:
 def init_vector_db_tables():
     """
     Initializes the PostgreSQL database by creating the 'vector' extension
-    and the tables required by LangChain's PGVector store.
+    and the tables required by LangChain's PGVector store, plus chat session tables.
     """
     conn = None
     cur = None
@@ -45,21 +45,47 @@ def init_vector_db_tables():
             logging.error(f"❌ Error creating 'vector' extension: {e}", exc_info=True)
             raise # Re-raise to be caught by outer except block
 
+        # 2. Create 'chat_sessions' table
+        logging.info("Checking for 'chat_sessions' table...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name VARCHAR(255) NOT NULL,
+                document_name TEXT,
+                document_path TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        logging.info("✅ 'chat_sessions' table ensured.")
 
-        # 2. Create 'langchain_pg_collection' table if it doesn't exist
+        # 3. Create 'chat_history' table
+        logging.info("Checking for 'chat_history' table...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id SERIAL PRIMARY KEY,
+                chat_session_id UUID NOT NULL REFERENCES chat_sessions(uuid) ON DELETE CASCADE,
+                role VARCHAR(50) NOT NULL,
+                content TEXT NOT NULL,
+                snippets JSONB,
+                timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        logging.info("✅ 'chat_history' table ensured.")
+
+        # 4. Create 'langchain_pg_collection' table if it doesn't exist
+        # This table's 'name' column will store the chat_session_id (UUID)
         logging.info("Checking for 'langchain_pg_collection' table...")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS langchain_pg_collection (
                 uuid UUID PRIMARY KEY,
-                name VARCHAR UNIQUE,
+                name VARCHAR UNIQUE, -- This 'name' will store the chat_session_id (UUID)
                 cmetadata JSONB
             );
         """)
         logging.info("✅ 'langchain_pg_collection' table ensured.")
 
-        # 3. Create 'langchain_pg_embedding' table if it doesn't exist
+        # 5. Create 'langchain_pg_embedding' table if it doesn't exist
         logging.info("Checking for 'langchain_pg_embedding' table...")
-        # Removed backslashes from the end of lines in the SQL query
         cur.execute("""
             CREATE TABLE IF NOT EXISTS langchain_pg_embedding (
                 id SERIAL PRIMARY KEY,

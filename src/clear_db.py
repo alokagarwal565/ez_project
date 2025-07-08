@@ -1,6 +1,6 @@
 # ===============================================================
 # File: src/clear_db.py
-# Description: Clears the PostgreSQL database tables used by PGVector.
+# Description: Clears the PostgreSQL database tables used by PGVector and chat sessions.
 # ===============================================================
 
 import psycopg2
@@ -19,9 +19,10 @@ except ImportError:
     logging.error("Please ensure config.py is in the 'src' directory and contains the PostgreSQL connection string.")
     exit(1) # Exit if config is not found
 
-def clear_vector_db_tables():
+def clear_all_vector_db_and_chat_tables():
     """
-    Clears the PostgreSQL database by dropping the tables required by LangChain's PGVector store.
+    Clears the PostgreSQL database by dropping all tables related to LangChain's PGVector store
+    and chat sessions. Use with caution!
     """
     conn = None
     cur = None
@@ -32,31 +33,27 @@ def clear_vector_db_tables():
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
         cur = conn.cursor()
 
-        # Drop 'langchain_pg_embedding' table if it exists
-        logging.info("Checking for and dropping 'langchain_pg_embedding' table...")
-        try:
-            cur.execute("DROP TABLE IF EXISTS langchain_pg_embedding CASCADE;")
-            logging.info("✅ 'langchain_pg_embedding' table dropped if it existed.")
-        except psycopg2_errors.InsufficientPrivilege:
-            logging.error("❌ Insufficient privileges to drop 'langchain_pg_embedding' table. Please ensure your PostgreSQL user has appropriate permissions.")
-            raise # Re-raise to be caught by outer except block
-        except Exception as e:
-            logging.error(f"❌ Error dropping 'langchain_pg_embedding' table: {e}", exc_info=True)
-            raise # Re-raise to be caught by outer except block
+        # Drop tables in reverse order of dependency to avoid foreign key issues
+        tables_to_drop = [
+            "chat_history",
+            "langchain_pg_embedding",
+            "langchain_pg_collection",
+            "chat_sessions"
+        ]
 
-        # Drop 'langchain_pg_collection' table if it exists
-        logging.info("Checking for and dropping 'langchain_pg_collection' table...")
-        try:
-            cur.execute("DROP TABLE IF EXISTS langchain_pg_collection CASCADE;")
-            logging.info("✅ 'langchain_pg_collection' table dropped if it existed.")
-        except psycopg2_errors.InsufficientPrivilege:
-            logging.error("❌ Insufficient privileges to drop 'langchain_pg_collection' table. Please ensure your PostgreSQL user has appropriate permissions.")
-            raise # Re-raise to be caught by outer except block
-        except Exception as e:
-            logging.error(f"❌ Error dropping 'langchain_pg_collection' table: {e}", exc_info=True)
-            raise # Re-raise to be caught by outer except block
+        for table in tables_to_drop:
+            logging.info(f"Checking for and dropping '{table}' table...")
+            try:
+                cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE;")
+                logging.info(f"✅ '{table}' table dropped if it existed.")
+            except psycopg2_errors.InsufficientPrivilege:
+                logging.error(f"❌ Insufficient privileges to drop '{table}' table. Please ensure your PostgreSQL user has appropriate permissions.")
+                raise # Re-raise to be caught by outer except block
+            except Exception as e:
+                logging.error(f"❌ Error dropping '{table}' table: {e}", exc_info=True)
+                raise # Re-raise to be caught by outer except block
 
-        logging.info("🎉 Database tables cleared successfully!")
+        logging.info("🎉 All database tables cleared successfully!")
 
     except OperationalError as e:
         logging.error(f"❌ PostgreSQL database connection error during clearing: {e}", exc_info=True)
@@ -74,4 +71,4 @@ def clear_vector_db_tables():
             conn.close()
 
 if __name__ == "__main__":
-    clear_vector_db_tables()
+    clear_all_vector_db_and_chat_tables()

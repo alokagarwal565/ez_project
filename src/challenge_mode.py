@@ -4,14 +4,18 @@
 # ===============================================================
 
 import logging
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Union # Import Union
 import streamlit as st
-import google.generativeai as genai
+import google.generativeai as genai # Re-import for Gemini
 import json # Import json for parsing LLM output
 import re   # Import re for regex to strip markdown
+from langchain_community.chat_models import ChatOllama # Import ChatOllama
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Define a type alias for the LLM, as it can be either Gemini or Ollama
+LLM_TYPE = Union[genai.GenerativeModel, ChatOllama]
 
 def _extract_json_from_markdown(text: str) -> str:
     """
@@ -24,9 +28,9 @@ def _extract_json_from_markdown(text: str) -> str:
         return match.group(1).strip()
     return text.strip() # Return original text if no markdown block found
 
-def generate_challenge_questions(document_content: str, llm: genai.GenerativeModel, num_questions: int = 3) -> List[str]:
+def generate_challenge_questions(document_content: str, llm: LLM_TYPE, num_questions: int = 3) -> List[str]: # Type hint changed
     """
-    Generates logic-based challenge questions from the document content using Gemini.
+    Generates logic-based challenge questions from the document content using the selected LLM.
     """
     if not document_content or not llm:
         st.warning("Cannot generate questions: missing document content or AI model not initialized.")
@@ -41,8 +45,15 @@ def generate_challenge_questions(document_content: str, llm: genai.GenerativeMod
     )
 
     try:
-        response = llm.generate_content(question_prompt)
-        raw_response_text = response.text
+        raw_response_text = ""
+        if isinstance(llm, genai.GenerativeModel):
+            response = llm.generate_content(question_prompt)
+            raw_response_text = response.text
+        elif isinstance(llm, ChatOllama):
+            response = llm.invoke(question_prompt)
+            raw_response_text = response.content
+        else:
+            raise ValueError("Unsupported LLM type for question generation.")
 
         # First, try to extract JSON from markdown if present
         json_string = _extract_json_from_markdown(raw_response_text)
@@ -65,13 +76,13 @@ def generate_challenge_questions(document_content: str, llm: genai.GenerativeMod
 
         return questions[:num_questions] # Return only the requested number of questions
     except Exception as e:
-        logging.error(f"❌ Error generating challenge questions with Gemini: {e}", exc_info=True)
+        logging.error(f"❌ Error generating challenge questions with LLM: {e}", exc_info=True)
         st.error(f"Failed to generate challenge questions. This might be due to an issue with the AI model. Error: {e}")
         return [f"Failed to generate questions: {e}"]
 
-def evaluate_user_answer(question: str, user_answer: str, document_content: str, llm: genai.GenerativeModel) -> Dict[str, Any]:
+def evaluate_user_answer(question: str, user_answer: str, document_content: str, llm: LLM_TYPE) -> Dict[str, Any]: # Type hint changed
     """
-    Evaluates a user's answer against the document content using Gemini.
+    Evaluates a user's answer against the document content using the selected LLM.
     Provides detailed feedback and rubric scores.
     Returns a dictionary with scores and feedback.
     """
@@ -90,8 +101,15 @@ def evaluate_user_answer(question: str, user_answer: str, document_content: str,
     )
 
     try:
-        response = llm.generate_content(structured_evaluation_prompt)
-        raw_response_text = response.text
+        raw_response_text = ""
+        if isinstance(llm, genai.GenerativeModel):
+            response = llm.generate_content(structured_evaluation_prompt)
+            raw_response_text = response.text
+        elif isinstance(llm, ChatOllama):
+            response = llm.invoke(structured_evaluation_prompt)
+            raw_response_text = response.content
+        else:
+            raise ValueError("Unsupported LLM type for answer evaluation.")
 
         # Extract JSON string from markdown code block if present
         json_string = _extract_json_from_markdown(raw_response_text)
@@ -117,7 +135,7 @@ def evaluate_user_answer(question: str, user_answer: str, document_content: str,
                 "feedback": f"Failed to parse structured evaluation. Raw AI response: {raw_response_text}"
             }
     except Exception as e:
-        logging.error(f"❌ Error evaluating user answer with Gemini: {e}", exc_info=True)
+        logging.error(f"❌ Error evaluating user answer with LLM: {e}", exc_info=True)
         st.error(f"Failed to evaluate your answer. This might be due to an issue with the AI model. Error: {e}")
         return {
             "accuracy_score": 0,

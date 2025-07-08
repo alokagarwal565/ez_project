@@ -5,8 +5,8 @@ import logging
 import os
 import pandas as pd
 import streamlit as st
-from typing import List, Any, Tuple
-from langchain_community.document_loaders import PyPDFLoader, TextLoader # Removed CSVLoader
+from typing import List, Any, Tuple, Dict, Union # Import Union
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
@@ -19,24 +19,32 @@ from PIL import Image
 import numpy as np
 import psycopg2
 from psycopg2 import OperationalError, errors as psycopg2_errors # Import specific psycopg2 errors
-import google.generativeai as genai
+import google.generativeai as genai # Re-import for Gemini
+from langchain_community.chat_models import ChatOllama # Import ChatOllama
 import json
 import re # Import regex module
+import uuid # For generating UUIDs for chat sessions
+from datetime import datetime # For timestamps
 
 from config import (
     DOC_FOLDER,
-    CHAT_MODEL,
+    GEMINI_MODEL_NAME, # New: Gemini model name
+    LOCAL_LLM_MODEL_NAME, # Local LLM model name
+    OLLAMA_BASE_URL,     # Ollama base URL
     EMBEDDING_MODEL_NAME,
-    COLLECTION_NAME,
+    COLLECTION_NAME, # This will now be a base name, actual collection name will be chat_id
     PGVECTOR_CONN_STRING_SQLACHEMY,
     PGVECTOR_CONN_STRING_PSYCOPG2,
-    GOOGLE_API_KEY
+    GOOGLE_API_KEY # Re-import for Gemini
 )
 from prompt_templates import RAG_PROMPT_TEMPLATE, SUMMARY_PROMPT_TEMPLATE, CHUNK_SUMMARY_PROMPT_TEMPLATE, DOCUMENT_COMPARISON_PROMPT
 
 # Define a heuristic for maximum tokens for direct summarization
 # This is a rough estimate and might need fine-tuning based on actual LLM token limits and performance
 MAX_DIRECT_SUMMARY_TOKENS = 8000 # Roughly equivalent to 4000 words, leaves room for prompt
+
+# Define a type alias for the LLM, as it can be either Gemini or Ollama
+LLM_TYPE = Union[genai.GenerativeModel, ChatOllama]
 
 @st.cache_resource
 def get_embedding_model():
@@ -51,42 +59,62 @@ def get_embedding_model():
         st.error(f"Failed to load embedding model. Please check your internet connection, model name, or if the model is correctly installed. Error: {e}")
         return None
 
-@st.cache_resource
-def get_gemini_rag_llm():
-    """Initializes Gemini LLM for RAG."""
-    if not GOOGLE_API_KEY:
-        st.error("Google API Key is required for Gemini LLM. Please set GOOGLE_API_KEY in your .env file.")
-        return None
-    try:
-        genai.configure(api_key=GOOGLE_API_KEY)
-        llm = genai.GenerativeModel(CHAT_MODEL) # Use CHAT_MODEL from config
-        logging.info(f"✅ Gemini GenerativeModel ({CHAT_MODEL}) initialized successfully for RAG.")
-        return llm
-    except Exception as e:
-        logging.error(f"❌ Error initializing Gemini LLM: {e}", exc_info=True)
-        st.error(f"Failed to initialize Gemini LLM. Please check your Google API Key in the .env file and ensure it's valid. Error: {e}")
+# Removed @st.cache_resource as LLM depends on user selection
+def get_llm(llm_choice: str) -> LLM_TYPE | None: # Updated function signature
+    """Initializes the chosen LLM (Gemini or Local Ollama)."""
+    if llm_choice == "Gemini":
+        if not GOOGLE_API_KEY:
+            st.error("Google API Key is required for Gemini LLM. Please set GOOGLE_API_KEY in your .env file.")
+            return None
+        try:
+            genai.configure(api_key=GOOGLE_API_KEY)
+            llm = genai.GenerativeModel(GEMINI_MODEL_NAME) # Use GEMINI_MODEL_NAME from config
+            logging.info(f"✅ Gemini GenerativeModel ({GEMINI_MODEL_NAME}) initialized successfully.")
+            return llm
+        except Exception as e:
+            logging.error(f"❌ Error initializing Gemini LLM: {e}", exc_info=True)
+            st.error(f"Failed to initialize Gemini LLM. Please check your Google API Key in the .env file and ensure it's valid. Error: {e}")
+            return None
+    elif llm_choice == "Local LLM (Ollama)":
+        if not LOCAL_LLM_MODEL_NAME:
+            st.error("Local LLM model name is not set. Please set LOCAL_LLM_MODEL_NAME in your .env or config.py file.")
+            return None
+        if not OLLAMA_BASE_URL:
+            st.error("Ollama base URL is not set. Please set OLLAMA_BASE_URL in your .env or config.py file.")
+            return None
+        try:
+            llm = ChatOllama(model=LOCAL_LLM_MODEL_NAME, base_url=OLLAMA_BASE_URL)
+            logging.info(f"✅ Local LLM ({LOCAL_LLM_MODEL_NAME}) initialized successfully via Ollama at {OLLAMA_BASE_URL}.")
+            return llm
+        except Exception as e:
+            logging.error(f"❌ Error initializing Local LLM (Ollama): {e}", exc_info=True)
+            st.error(f"Failed to initialize Local LLM. Please ensure Ollama is running and the model '{LOCAL_LLM_MODEL_NAME}' is pulled. Error: {e}")
+            return None
+    else:
+        st.error("Invalid LLM choice.")
         return None
 
 
-@st.cache_resource
-def load_existing_vector_db(_embedding_model: Any) -> PGVector | None:
-    """Loads the existing vector database."""
+def load_existing_vector_db(_embedding_model: Any, chat_session_id: str) -> PGVector | None:
+    """Loads the existing vector database for a specific chat session."""
+    # The collection_name for PGVector will be the chat_session_id
+    collection_name_for_session = str(chat_session_id)
     try:
         vector_db = PGVector(
             embedding_function=_embedding_model,
-            collection_name=COLLECTION_NAME,
+            collection_name=collection_name_for_session,
             connection_string=PGVECTOR_CONN_STRING_SQLACHEMY,
         )
-        logging.info("✅ Existing vector DB loaded successfully.")
+        logging.info(f"✅ Existing vector DB loaded successfully for session: {chat_session_id}.")
         create_hnsw_indexing() # Ensure HNSW index is created for performance
         return vector_db
     except OperationalError as e:
-        logging.error(f"❌ PostgreSQL connection error when loading vector DB: {e}", exc_info=True)
-        st.error(f"Database connection failed when loading knowledge base. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
+        logging.error(f"❌ PostgreSQL connection error when loading vector DB for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Database connection failed when loading knowledge base for this chat. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
         return None
     except Exception as e:
-        logging.error(f"❌ Error loading existing vector DB: {e}", exc_info=True)
-        st.error(f"Failed to load vector database. Ensure PostgreSQL is running, PGVector extension is installed, and tables are initialized. Error: {e}")
+        logging.error(f"❌ Error loading existing vector DB for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Failed to load vector database for this chat. Ensure PostgreSQL is running, PGVector extension is installed, and tables are initialized. Error: {e}")
         return None
 
 def load_documents(file_path: str) -> List[Document]:
@@ -96,10 +124,9 @@ def load_documents(file_path: str) -> List[Document]:
         loader = PyPDFLoader(file_path)
     elif file_path.endswith(".txt"):
         loader = TextLoader(file_path)
-    # Removed CSVLoader
     else:
         logging.warning(f"Unsupported file type for {file_path}. Skipping.")
-        st.warning(f"Unsupported file type: {os.path.basename(file_path)}. Please upload PDF or TXT.") # Updated message
+        st.warning(f"Unsupported file type: {os.path.basename(file_path)}. Please upload PDF or TXT.")
         return []
 
     if loader:
@@ -125,28 +152,19 @@ def split_documents(documents: List[Document]) -> List[Document]:
     logging.info(f"Split documents into {len(chunks)} chunks.")
     return chunks
 
-def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: List[str] = None, progress_bar=None, status_text=None) -> int:
+def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: List[str], chat_session_id: str, progress_bar=None, status_text=None) -> int:
     """
-    Creates/rebuilds the vector database by processing documents.
-    If documents_to_process is None, processes all documents in DOC_FOLDER.
-    Otherwise, processes only the specified file paths.
+    Creates/rebuilds the vector database for a specific chat session by processing documents.
     Returns the number of chunks processed.
     """
     if status_text: status_text.info("🔄 Rebuilding knowledge base. This may take a moment...")
     if progress_bar: progress_bar.progress(0, text="Starting knowledge base rebuild...")
 
-    try:
-        all_file_paths = []
-        if documents_to_process:
-            all_file_paths = documents_to_process
-            logging.info(f"Processing specific documents for rebuild: {len(all_file_paths)} files.")
-        else:
-            logging.info(f"Processing all documents in {DOC_FOLDER} for rebuild.")
-            for root, _, files in os.walk(DOC_FOLDER):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    all_file_paths.append(file_path)
+    # The collection_name for PGVector will be the chat_session_id
+    collection_name_for_session = str(chat_session_id)
 
+    try:
+        all_file_paths = documents_to_process
         if not all_file_paths:
             st.warning("No documents found to process for the knowledge base.")
             if progress_bar: progress_bar.progress(100, text="No documents to process.")
@@ -172,115 +190,69 @@ def create_vector_db_and_rebuild(embedding_model: Any, documents_to_process: Lis
         if progress_bar: progress_bar.progress(20, text="Chunking text...")
         chunks = split_documents(documents)
 
-        # Clear existing collection before adding new documents to ensure a "rebuild"
+        # Clear existing embeddings for this specific chat session's collection
         conn = None
         cur = None
         try:
-            if status_text: status_text.info(f"Clearing existing data for collection '{COLLECTION_NAME}'...")
-            if progress_bar: progress_bar.progress(40, text=f"Clearing existing data for collection '{COLLECTION_NAME}'...")
+            if status_text: status_text.info(f"Clearing existing data for session '{chat_session_id}'...")
+            if progress_bar: progress_bar.progress(40, text=f"Clearing existing data for session '{chat_session_id}'...")
             conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
             conn.autocommit = True
             cur = conn.cursor()
-            # Get collection_id for the specific collection name
-            cur.execute("SELECT uuid FROM langchain_pg_collection WHERE name = %s;", (COLLECTION_NAME,))
+
+            # First, ensure the collection exists in langchain_pg_collection and get its UUID
+            cur.execute("SELECT uuid FROM langchain_pg_collection WHERE name = %s;", (collection_name_for_session,))
             collection_uuid_result = cur.fetchone()
+
             if collection_uuid_result:
                 collection_uuid = collection_uuid_result[0]
-                logging.info(f"Deleting existing documents from collection '{COLLECTION_NAME}' ({collection_uuid})")
+                logging.info(f"Deleting existing embeddings for collection '{collection_name_for_session}' ({collection_uuid})")
                 cur.execute("DELETE FROM langchain_pg_embedding WHERE collection_id = %s;", (collection_uuid,))
                 conn.commit()
-                logging.info("Existing documents cleared from collection.")
+                logging.info("Existing embeddings cleared for session collection.")
             else:
-                logging.info(f"Collection '{COLLECTION_NAME}' does not exist, no documents to clear.")
+                logging.info(f"Collection '{collection_name_for_session}' does not exist, no embeddings to clear. Will be created by PGVector.")
         except OperationalError as e:
-            logging.error(f"❌ PostgreSQL connection error during clearing: {e}", exc_info=True)
-            st.error(f"Database connection failed during data clearing. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
+            logging.error(f"❌ PostgreSQL connection error during clearing for session {chat_session_id}: {e}", exc_info=True)
+            st.error(f"Database connection failed during data clearing for this chat. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
             return 0
         except psycopg2_errors.UndefinedTable as e:
             logging.warning(f"Collection table not found during clearing (might be first run): {e}")
             st.warning("Database tables not found. Attempting to create them (this is normal on first run).")
         except Exception as e:
-            logging.warning(f"Could not clear existing documents from collection '{COLLECTION_NAME}': {e}", exc_info=True)
-            st.warning(f"Failed to clear existing documents from knowledge base. Proceeding with adding new documents. Error: {e}")
+            logging.warning(f"Could not clear existing embeddings for session '{chat_session_id}': {e}", exc_info=True)
+            st.warning(f"Failed to clear existing embeddings for this chat. Proceeding with adding new documents. Error: {e}")
         finally:
             if cur: cur.close()
             if conn: conn.close()
 
-        logging.info("Creating/updating vector database with new chunks.")
+        logging.info(f"Creating/updating vector database with new chunks for session {chat_session_id}.")
         if status_text: status_text.info("Embedding chunks and adding to database...")
         if progress_bar: progress_bar.progress(60, text="Embedding chunks and adding to database...")
 
+        # Initialize PGVector with the specific collection name (chat_session_id)
         vector_db = PGVector(
             embedding_function=embedding_model,
-            collection_name=COLLECTION_NAME,
+            collection_name=collection_name_for_session,
             connection_string=PGVECTOR_CONN_STRING_SQLACHEMY,
-            # pre_delete_collection=True # This option is for dropping the entire table, not just clearing a collection
         )
 
         vector_db.add_documents(chunks)
 
-        logging.info(f"✅ Vector database rebuilt with {len(chunks)} chunks.")
-        if status_text: st.success(f"✅ Knowledge base rebuilt with {len(chunks)} chunks from {len(all_file_paths)} files.")
+        logging.info(f"✅ Vector database rebuilt with {len(chunks)} chunks for session {chat_session_id}.")
+        if status_text: st.success(f"✅ Knowledge base rebuilt with {len(chunks)} chunks from {len(all_file_paths)} files for this chat.")
         if progress_bar: progress_bar.progress(100, text="Knowledge base rebuilt successfully!")
         return len(chunks) # Return number of chunks
     except OperationalError as e:
-        logging.error(f"❌ PostgreSQL connection error during vector DB rebuild: {e}", exc_info=True)
-        st.error(f"Database connection failed during knowledge base rebuild. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
+        logging.error(f"❌ PostgreSQL connection error during vector DB rebuild for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Database connection failed during knowledge base rebuild for this chat. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
         if progress_bar: progress_bar.progress(0, text="Failed to rebuild knowledge base.")
         return 0
     except Exception as e:
-        logging.error(f"❌ Error during vector DB rebuild: {e}", exc_info=True)
-        st.error(f"Failed to rebuild knowledge base. Please check the document content or database configuration. Error: {e}")
+        logging.error(f"❌ Error during vector DB rebuild for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Failed to rebuild knowledge base for this chat. Please check the document content or database configuration. Error: {e}")
         if progress_bar: progress_bar.progress(0, text="Failed to rebuild knowledge base.")
         return 0
-
-def delete_documents_from_vector_db(file_paths: List[str]):
-    """Deletes documents from the vector database based on file paths."""
-    if not file_paths:
-        logging.info("No file paths provided for deletion from vector DB.")
-        return
-
-    st.info(f"🗑️ Deleting {len(file_paths)} document(s) from the knowledge base...")
-    conn = None
-    cur = None
-    try:
-        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
-        cur = conn.cursor()
-
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        relative_file_paths = [os.path.relpath(path, project_root) for path in file_paths]
-
-        cur.execute("SELECT uuid FROM langchain_pg_collection WHERE name = %s;", (COLLECTION_NAME,))
-        collection_id_result = cur.fetchone()
-
-        if not collection_id_result:
-            st.warning(f"Collection '{COLLECTION_NAME}' not found in the vector DB. No documents to delete.")
-            logging.info(f"Collection '{COLLECTION_NAME}' not found, skipping deletion.")
-            return
-
-        collection_id = collection_id_result[0]
-
-        delete_query = """
-            DELETE FROM langchain_pg_embedding
-            WHERE collection_id = %s AND cmetadata->>'source' = ANY(%s::text[]);
-        """
-        cur.execute(delete_query, (collection_id, relative_file_paths))
-        conn.commit()
-
-        deleted_rows = cur.rowcount
-        logging.info(f"✅ Deleted {deleted_rows} chunks from {len(file_paths)} documents from vector DB.")
-        st.success(f"✅ Deleted {deleted_rows} chunks from {len(file_paths)} documents from knowledge base.")
-
-    except OperationalError as e:
-        logging.error(f"❌ PostgreSQL connection error during document deletion: {e}", exc_info=True)
-        st.error(f"Database connection failed during document deletion. Please ensure PostgreSQL is running and your database credentials in .env are correct. Error: {e}")
-    except Exception as e:
-        logging.error(f"Error during document deletion from PGVector: {e}", exc_info=True)
-        st.error(f"Failed to delete documents from Vector DB. Error: {e}")
-    finally:
-        if cur: cur.close()
-        if conn: conn.close()
-
 
 def parse_llm_response_with_snippets(response_text: str) -> Tuple[str, List[str]]:
     """
@@ -301,12 +273,12 @@ def parse_llm_response_with_snippets(response_text: str) -> Tuple[str, List[str]
 
     return main_answer, found_snippets
 
-def create_rag_chain(_llm: genai.GenerativeModel):
+def create_rag_chain(_llm: LLM_TYPE): # Type hint changed to LLM_TYPE
     """
-    Create the RAG chain using a direct Google GenerativeModel.
-    This chain will manually construct the prompt and call generate_content.
+    Create the RAG chain using the provided LLM instance (Gemini or ChatOllama).
+    This chain will manually construct the prompt and call the appropriate invocation method.
     """
-    logging.info("Creating RAG chain with Gemini GenerativeModel.")
+    logging.info(f"Creating RAG chain with LLM type: {type(_llm).__name__}.")
 
     def format_docs(docs):
         # Format documents, including their source for context
@@ -319,81 +291,34 @@ def create_rag_chain(_llm: genai.GenerativeModel):
             formatted_string += "\n\n"
         return formatted_string.strip()
 
-    def rag_callable(question_with_context: str, retriever: Any): # Renamed 'question' to 'question_with_context'
+    def rag_callable(question_with_context: str, retriever: Any):
         try:
-            docs = retriever.invoke(question_with_context) # Use the contextualized question for retrieval
+            docs = retriever.invoke(question_with_context)
             formatted_context = format_docs(docs)
 
             final_prompt = RAG_PROMPT_TEMPLATE.format(context=formatted_context, question=question_with_context)
 
-            response = _llm.generate_content(final_prompt)
+            response_text = ""
+            if isinstance(_llm, genai.GenerativeModel):
+                response = _llm.generate_content(final_prompt)
+                response_text = response.text
+            elif isinstance(_llm, ChatOllama):
+                response = _llm.invoke(final_prompt)
+                response_text = response.content
+            else:
+                raise ValueError("Unsupported LLM type provided to RAG chain.")
+
             # Parse the response to separate answer and snippets
-            answer_text, snippets = parse_llm_response_with_snippets(response.text)
+            answer_text, snippets = parse_llm_response_with_snippets(response_text)
             return answer_text, snippets, docs # Return answer, snippets, and original docs
         except Exception as e:
-            logging.error(f"Error generating content with Gemini in RAG chain: {e}", exc_info=True)
+            logging.error(f"Error generating content with LLM in RAG chain: {e}", exc_info=True)
             # Provide a more user-friendly error message
             st.error(f"Failed to get an answer from the AI. This might be due to an issue with the AI model or your query. Error: {e}")
             return f"Sorry, I couldn't process your request right now. Please try again or rephrase your question. Error: {e}", [], []
 
     logging.info("RAG callable created successfully.")
     return rag_callable
-
-def classify_query_department(query: str) -> Tuple[str, str] :
-    """
-    Classifies a user query into a department and identifies relevant keywords.
-    Uses a direct Gemini API call.
-    """
-    if not GOOGLE_API_KEY:
-        logging.warning("Google API Key not set. Cannot classify query by department using Gemini.")
-        st.warning("AI features requiring Google API Key are not available. Please set GOOGLE_API_KEY in your .env file.")
-        return "general", ""
-
-    try:
-        genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel(CHAT_MODEL) # Use CHAT_MODEL from config
-
-        classification_prompt = f"""
-        Given the following user query, classify it into one of these departments: 'HR', 'IT', 'Sales', 'Finance', 'Legal', 'Product', 'Marketing', 'Data Science', 'Operations', 'Research', 'Customer Support', 'General'.
-        Also, extract up to 3 most relevant keywords from the query.
-
-        Format your response as a JSON object with 'department' and 'keywords' (a list of strings).
-        Example: {{"department": "HR", "keywords": ["leave policy", "benefits"]}}
-        Example: {{"department": "Finance", "keywords": ["budget", "expense report"]}}
-
-        Query: "{query}"
-        """
-        response = model.generate_content(classification_prompt)
-
-        try:
-            response_json = json.loads(response.text)
-            department = response_json.get("department", "General")
-            keywords = response_json.get("keywords", [])
-            if not isinstance(keywords, list):
-                keywords = [keywords] if isinstance(keywords, str) else []
-            logging.info(f"Query classified to department: {department}, Keywords: {', '.join(keywords)}")
-            return department, ", ".join(keywords)
-        except json.JSONDecodeError:
-            logging.warning(f"Gemini response for classification was not valid JSON: {response.text[:100]}...")
-            st.warning("AI model returned an unparseable response for query classification. Using general classification.")
-            # Fallback to simple keyword-based classification if JSON parsing fails
-            lower_query = query.lower()
-            if "hr" in lower_query or "human resources" in lower_query or "leave" in lower_query or "salary" in lower_query:
-                return "HR", "HR"
-            elif "it" in lower_query or "tech" in lower_query or "software" in lower_query:
-                return "IT", "IT"
-            elif "sales" in lower_query or "customer" in lower_query or "client" in lower_query:
-                return "Sales", "Sales"
-            elif "finance" in lower_query or "budget" in lower_query or "expense" in lower_query:
-                return "Finance", "Finance"
-            elif "legal" in lower_query or "contract" in lower_query or "compliance" in lower_query:
-                return "Legal", "Legal"
-            return "General", ""
-
-    except Exception as e:
-        logging.error(f"Error classifying query with Gemini: {e}", exc_info=True)
-        st.error(f"Failed to classify query using AI. Error: {e}")
-        return "general", ""
 
 def get_document_content_for_summary(file_path: str) -> str:
     """
@@ -408,9 +333,9 @@ def get_document_content_for_summary(file_path: str) -> str:
     full_content = "\n".join([doc.page_content for doc in documents])
     return full_content
 
-def generate_auto_summary(document_content: str, llm: genai.GenerativeModel) -> str:
+def generate_auto_summary(document_content: str, llm: LLM_TYPE) -> str: # Type hint changed to LLM_TYPE
     """
-    Generates a concise summary (approx. 150 words) of the document content using Gemini.
+    Generates a concise summary (approx. 150 words) of the document content using the LLM.
     For very large documents, it implements a map-reduce style summarization.
     """
     if not document_content or not llm:
@@ -438,8 +363,18 @@ def generate_auto_summary(document_content: str, llm: genai.GenerativeModel) -> 
             for i, chunk in enumerate(content_chunks):
                 logging.info(f"Summarizing chunk {i+1}/{len(content_chunks)}")
                 chunk_prompt = CHUNK_SUMMARY_PROMPT_TEMPLATE.format(text_chunk=chunk)
-                chunk_response = llm.generate_content(chunk_prompt)
-                chunk_summaries.append(chunk_response.text)
+                
+                chunk_response_text = ""
+                if isinstance(llm, genai.GenerativeModel):
+                    chunk_response = llm.generate_content(chunk_prompt)
+                    chunk_response_text = chunk_response.text
+                elif isinstance(llm, ChatOllama):
+                    chunk_response = llm.invoke(chunk_prompt)
+                    chunk_response_text = chunk_response.content
+                else:
+                    raise ValueError("Unsupported LLM type for chunk summarization.")
+                
+                chunk_summaries.append(chunk_response_text)
                 st.progress((i + 1) / len(content_chunks), text=f"Summarizing chunk {i+1} of {len(content_chunks)}...")
 
             # Combine chunk summaries and summarize them again
@@ -447,19 +382,39 @@ def generate_auto_summary(document_content: str, llm: genai.GenerativeModel) -> 
             logging.info(f"Combined {len(chunk_summaries)} chunk summaries. Final summarization step.")
 
             final_summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(document_content=combined_chunk_summaries)
-            response = llm.generate_content(final_summary_prompt)
-            return response.text
+            
+            final_response_text = ""
+            if isinstance(llm, genai.GenerativeModel):
+                response = llm.generate_content(final_summary_prompt)
+                final_response_text = response.text
+            elif isinstance(llm, ChatOllama):
+                response = llm.invoke(final_summary_prompt)
+                final_response_text = response.content
+            else:
+                raise ValueError("Unsupported LLM type for final summarization.")
+            
+            return final_response_text
         else:
             # Direct summarization for smaller documents
             summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(document_content=document_content)
-            response = llm.generate_content(summary_prompt)
-            return response.text
+            
+            response_text = ""
+            if isinstance(llm, genai.GenerativeModel):
+                response = llm.generate_content(summary_prompt)
+                response_text = response.text
+            elif isinstance(llm, ChatOllama):
+                response = llm.invoke(summary_prompt)
+                response_text = response.content
+            else:
+                raise ValueError("Unsupported LLM type for direct summarization.")
+            
+            return response_text
     except Exception as e:
-        logging.error(f"❌ Error generating auto-summary with Gemini: {e}", exc_info=True)
+        logging.error(f"❌ Error generating auto-summary with LLM: {e}", exc_info=True)
         st.error(f"Failed to generate summary. This might be due to an issue with the AI model or the document content. Error: {e}")
         return f"Failed to generate summary: {e}"
 
-def compare_documents_with_llm(query: str, llm: genai.GenerativeModel, retriever: Any) -> str:
+def compare_documents_with_llm(query: str, llm: LLM_TYPE, retriever: Any) -> str: # Type hint changed to LLM_TYPE
     """
     Compares concepts or findings across multiple documents using the LLM.
     Retrieves relevant chunks and prompts the LLM to perform the comparison.
@@ -502,10 +457,254 @@ def compare_documents_with_llm(query: str, llm: genai.GenerativeModel, retriever
             comparison_query=query
         )
 
-        response = llm.generate_content(comparison_prompt)
-        return response.text
+        response_text = ""
+        if isinstance(llm, genai.GenerativeModel):
+            response = llm.generate_content(comparison_prompt)
+            response_text = response.text
+        elif isinstance(llm, ChatOllama):
+            response = llm.invoke(comparison_prompt)
+            response_text = response.content
+        else:
+            raise ValueError("Unsupported LLM type for document comparison.")
+        
+        return response_text
 
     except Exception as e:
-        logging.error(f"❌ Error comparing documents with Gemini: {e}", exc_info=True)
+        logging.error(f"❌ Error comparing documents with LLM: {e}", exc_info=True)
         st.error(f"Failed to compare documents. This might be due to an issue with the AI model or the documents. Error: {e}")
         return f"Failed to compare documents: {e}"
+
+# --- New functions for Chat Session Management ---
+
+def create_chat_session_db(chat_name: str, document_name: str = None, document_path: str = None) -> str:
+    """Inserts a new chat session into the database and returns its UUID."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        cur = conn.cursor()
+        new_uuid = uuid.uuid4()
+        cur.execute(
+            """
+            INSERT INTO chat_sessions (uuid, name, document_name, document_path)
+            VALUES (%s, %s, %s, %s) RETURNING uuid;
+            """,
+            (str(new_uuid), chat_name, document_name, document_path) # Convert UUID to string
+        )
+        session_uuid = cur.fetchone()[0]
+        conn.commit()
+        logging.info(f"Created new chat session: {chat_name} with ID: {session_uuid}")
+        return str(session_uuid)
+    except Exception as e:
+        logging.error(f"❌ Error creating chat session in DB: {e}", exc_info=True)
+        st.error(f"Failed to create new chat session. Error: {e}")
+        return None
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def load_chat_sessions_db() -> List[Dict[str, Any]]:
+    """Retrieves all chat sessions from the database."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT uuid, name, document_name, document_path, created_at
+            FROM chat_sessions
+            ORDER BY created_at DESC;
+            """
+        )
+        sessions = []
+        for row in cur.fetchall():
+            sessions.append({
+                "id": str(row[0]),
+                "name": row[1],
+                "document_name": row[2],
+                "document_path": row[3],
+                "created_at": row[4].strftime("%Y-%m-%d %H:%M:%S") if row[4] else "N/A"
+            })
+        logging.info(f"Loaded {len(sessions)} chat sessions from DB.")
+        return sessions
+    except Exception as e:
+        logging.error(f"❌ Error loading chat sessions from DB: {e}", exc_info=True)
+        st.error(f"Failed to load past chat sessions. Error: {e}")
+        return []
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def delete_chat_session_db(chat_session_id: str):
+    """Deletes a chat session and all its associated data (history, embeddings) from the database."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        conn.autocommit = True # For DDL operations like dropping collection
+        cur = conn.cursor()
+
+        # Delete from chat_sessions (this will cascade delete from chat_history due to ON DELETE CASCADE)
+        cur.execute("DELETE FROM chat_sessions WHERE uuid = %s;", (chat_session_id,))
+        logging.info(f"Deleted chat session {chat_session_id} and its history.")
+
+        # Also delete the associated collection from langchain_pg_collection and its embeddings
+        # The collection name is the chat_session_id itself
+        cur.execute("SELECT uuid FROM langchain_pg_collection WHERE name = %s;", (chat_session_id,))
+        collection_uuid_result = cur.fetchone()
+
+        if collection_uuid_result:
+            collection_uuid = collection_uuid_result[0]
+            cur.execute("DELETE FROM langchain_pg_embedding WHERE collection_id = %s;", (collection_uuid,))
+            cur.execute("DELETE FROM langchain_pg_collection WHERE uuid = %s;", (collection_uuid,))
+            logging.info(f"Deleted PGVector collection {collection_uuid} and its embeddings for session {chat_session_id}.")
+        else:
+            logging.info(f"No PGVector collection found for session {chat_session_id}, skipping embedding deletion.")
+
+        st.success(f"Chat session '{chat_session_id}' and its data deleted successfully.")
+    except Exception as e:
+        logging.error(f"❌ Error deleting chat session {chat_session_id} from DB: {e}", exc_info=True)
+        st.error(f"Failed to delete chat session. Error: {e}")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def save_chat_message_db(chat_session_id: str, role: str, content: str, snippets: List[str] = None):
+    """Saves a chat message (user question or AI answer) to the database."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO chat_history (chat_session_id, role, content, snippets)
+            VALUES (%s, %s, %s, %s);
+            """,
+            (chat_session_id, role, content, json.dumps(snippets) if snippets else None)
+        )
+        conn.commit()
+        logging.debug(f"Saved message for session {chat_session_id}, role: {role}")
+    except Exception as e:
+        logging.error(f"❌ Error saving chat message for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Failed to save chat message. Error: {e}")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def load_chat_history_db(chat_session_id: str) -> List[Dict[str, Any]]:
+    """Loads chat history for a given chat session from the database."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT role, content, snippets
+            FROM chat_history
+            WHERE chat_session_id = %s
+            ORDER BY timestamp;
+            """,
+            (chat_session_id,)
+        )
+        history = []
+        for row in cur.fetchall():
+            snippets_data = row[2]
+            # Ensure snippets_data is a list, even if it was stored as null/None
+            if snippets_data is None:
+                snippets_list = []
+            elif isinstance(snippets_data, str): # If JSONB stored as string, parse it
+                try:
+                    snippets_list = json.loads(snippets_data)
+                except json.JSONDecodeError:
+                    snippets_list = [] # Fallback if parsing fails
+            else: # Assume it's already a list or other direct JSONB type
+                snippets_list = snippets_data
+
+            history.append({
+                "role": row[0],
+                "content": row[1],
+                "snippets": snippets_list
+            })
+        logging.info(f"Loaded {len(history)} messages for session {chat_session_id}.")
+        return history
+    except Exception as e:
+        logging.error(f"❌ Error loading chat history for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Failed to load chat history. Error: {e}")
+        return []
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def rename_chat_session_db(chat_session_id: str, new_name: str):
+    """Renames a chat session in the database."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE chat_sessions
+            SET name = %s
+            WHERE uuid = %s;
+            """,
+            (new_name, chat_session_id)
+        )
+        conn.commit()
+        logging.info(f"Renamed chat session {chat_session_id} to '{new_name}'.")
+        st.success(f"Chat renamed to '{new_name}'!")
+    except Exception as e:
+        logging.error(f"❌ Error renaming chat session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Failed to rename chat. Error: {e}")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def update_chat_session_document_metadata_db(chat_session_id: str, document_name: str, document_path: str):
+    """Updates the document metadata for an existing chat session."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE chat_sessions
+            SET document_name = %s, document_path = %s
+            WHERE uuid = %s;
+            """,
+            (document_name, document_path, chat_session_id)
+        )
+        conn.commit()
+        logging.info(f"Updated document metadata for session {chat_session_id}.")
+    except Exception as e:
+        logging.error(f"❌ Error updating document metadata for session {chat_session_id}: {e}", exc_info=True)
+        st.error(f"Failed to update document metadata for this chat. Error: {e}")
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
+
+def get_num_chunks_for_session(chat_session_id: str) -> int:
+    """Retrieves the number of chunks stored for a given chat session."""
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(PGVECTOR_CONN_STRING_PSYCOPG2)
+        cur = conn.cursor()
+        cur.execute("SELECT uuid FROM langchain_pg_collection WHERE name = %s;", (str(chat_session_id),))
+        collection_uuid_result = cur.fetchone()
+        if collection_uuid_result:
+            collection_uuid = collection_uuid_result[0]
+            cur.execute("SELECT COUNT(*) FROM langchain_pg_embedding WHERE collection_id = %s;", (collection_uuid,))
+            count = cur.fetchone()[0]
+            return count
+        return 0
+    except Exception as e:
+        logging.error(f"❌ Error getting chunk count for session {chat_session_id}: {e}", exc_info=True)
+        return 0
+    finally:
+        if cur: cur.close()
+        if conn: conn.close()
